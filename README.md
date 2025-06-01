@@ -1,2 +1,277 @@
 # IVB
 從實驗數據中提取特徵值：結合圖像分析與卷積/去卷積技術
+從實驗數據中提取特徵值：結合圖像分析與卷積/去卷積技術的綜合報告1. 緒論1.1. 實驗材料科學中特徵提取的挑戰現代實驗物理學，特別是在凝聚態物理和材料科學領域，產生了大量複雜的數據集。所提供的數據，包括外部磁場/通量 (y_field)、施加電流 (appl_current)、測量電壓 (meas_voltage_K2) 及其導數 (dV_dI)，是表徵超導體等材料的典型輸運測量結果 1。從這些數據中提取有意義的物理參數（「本徵值」或特徵）對於理解材料特性、器件性能和潛在的物理機制至關重要 2。使用者查詢的意涵超越了簡單的參數提取，更著重於理解材料特性如何隨 y_field（例如磁場或通量）變化及其演化行為。這表明需要能夠捕捉趨勢、轉變和複雜依賴關係的方法。1.2. 傳統分析的局限性與先進技術的需求雖然存在提取主要參數的標準方法，但它們可能無法捕捉細微特徵、相互依賴性或在不同條件下（由 y_field 表示）的特性演化。此外，噪聲和儀器響應函數可能會掩蓋真實的材料特性。1.3. 先進方法概述：圖像分析與去卷積本報告將詳細介紹如何將傳統上用於其他領域的技術，如圖像分析和信號處理（卷積/去卷積），有效地應用於從這些類型的實驗數據中提取特徵。圖像分析可以將數據集轉換為視覺表示，從而能夠使用強大的模式識別算法（例如卷積神經網絡 CNN、長短期記憶網絡 LSTM）4。卷積/去卷積方法有助於將內在材料響應與儀器效應或噪聲分離，從而實現更準確的特徵提取 6。結合「圖像分析」和「卷積/去卷積」表明了一種雙管齊下的策略：一方面處理數據集中的宏觀組織和模式（可能跨越不同 y_field 值的許多 I-V 曲線），另一方面細化單個數據曲線以揭示更真實的微觀/內在特徵。1.4. 報告目標與結構本報告旨在為從使用者提供的數據類型中提取標準和高級特徵提供全面的指南，並詳細介紹圖像分析和卷積/去卷積技術在該特定應用中的適應性。報告結構將涵蓋數據表徵、常規特徵提取、基於圖像的先進方法、去卷積技術以及綜合策略。2. 實驗數據表徵2.1. 理解所提供的數據結構 1對實驗數據的深入理解是特徵提取的第一步。提供的數據集包含以下關鍵列：
+
+y_field：此列很可能代表實驗期間系統變化的外部控制參數。鑑於超導性和 SQUID 磁強計相關研究的背景 9，y_field 極有可能是外部磁場或磁通量。數據片段 1 顯示 y_field 值如 0.00285、0.0028502 等，表明步長非常精細。資料 1 確認 y_field 值的範圍從 0.00285 到至少 0.0029372。這種 y_field 的高分辨率對於基於圖像的分析至關重要，因為它為潛在的二維數據圖的一個軸提供了密集的「像素化」。如果 y_field 的步長較大，創建二維圖（例如，以 dV_dI 為強度的 appl_current vs y_field 圖）將導致圖像粗糙。觀測到的精細步長意味著可以很好地解析作為 y_field 函數的連續特徵或急劇轉變，使得圖像處理技術更可行且信息更豐富。
+
+
+appl_current (施加電流, I)：這是施加到樣品上的激勵電流。在 1 中，其值範圍從 -3e-06 到 3e-06 A（即 -3 µA 到 +3 µA），表明電流掃描通過零點。從負值到正值的掃描允許檢查 I-V 特性中的遲滯現象，這本身可以是一個重要的物理特徵（例如，在某些類型的約瑟夫森結中或由於磁通捕獲）。如果特徵（如 Ic 或轉變形狀）在正向和反向電流掃描中有所不同，這本身就是系統的一個重要特性。
+
+
+meas_voltage_K2 (測量電壓, V)：樣品對施加電流的電壓響應。在 1 中，其值範圍約為 -8e-05 V 到 +8e-05 V。"K2" 可能指特定的測量通道或增益因子。
+
+
+dV_dI (微分電阻)：計算得到的電壓對電流的導數 (dV/dI)。這通常比原始 V-I 曲線對超導體中的轉變和特徵更敏感 15。在 1 中，其值變化顯著，包括非常大的尖峰（例如 135.68, 157.28），這是急劇轉變的特徵，以及較小的波動值。dV_dI 列中同時存在非常小的值和非常大的尖峰，表明這是一個高度非線性的系統。小值可能對應於超導態（低電阻）或遠離轉變的正常態（恆定電阻），而大尖峰則精確定位了轉變區域本身。任何圖像表示都需要處理這種動態範圍，可能通過對數縮放或歸一化，以有效地可視化所有特徵。
+
+2.2. 表1：數據列描述與特性為了清晰地概述數據，下表總結了各列的可能物理意義、數據類型、典型範圍和推斷單位。
+列名可能的物理意義數據類型 典型範圍 單位 (推斷)備註y_field外部磁通量/磁場浮點數~0.00285 至 ~0.0029372(待定：例如 Φ₀, T, Gs)系統變化的控制參數。appl_current施加的電流浮點數 (科學記數法)-3.0e-6 至 +3.0e-6A (安培)在正負值之間掃描。meas_voltage_K2測量的電壓降浮點數 (科學記數法)~ -8.2e-5 至 +8.3e-5V (伏特)對 appl_current 的響應。"K2" 可能是儀器特定的。dV_dI微分電阻浮點數高度可變，從小值到 >100Ω (歐姆)計算得出。對轉變敏感。包含銳利的峰值。
+2.3. 物理背景與預期現象
+超導體中的 I-V 曲線：通常在達到臨界電流 (Ic) 之前顯示零電壓，然後過渡到電阻態 16。這種轉變的形狀由 n 值表徵。
+dV/dI 曲線：dV/dI vs. I 曲線中的峰值可以精確指示 Ic 15。正常態的基線值對應於正常態電阻 (Rn)。
+y_field (磁通量/磁場) 的影響：對於超導體，Ic、n 值以及 I-V 和 dV/dI 曲線的整體形狀都強烈依賴於施加的磁場 9。SQUID 的 V-Φ 曲線顯示隨磁通量變化的週期性電壓振盪 10。如果 y_field 是通過 SQUID 環路的磁通量，則 meas_voltage_K2 可能代表 SQUID 電壓，並且特徵將隨 y_field 週期性變化。然而，appl_current 和 dV_dI 的存在表明這些更可能是對受 y_field 影響的樣品的輸運測量，或者 y_field 是施加到超導樣品上的外部磁場。
+數據 1 顯示，對於 y_field = 0.00285，在零點附近的 appl_current 範圍內，dV_dI 值非常小（接近零），然後急劇增加，這是超導到正常態轉變的特徵。
+3. 電輸運數據 (I-V, dV/dI) 的常規特徵提取本節詳細介紹了提取主要物理參數的既定方法。這些參數對 y_field 的依賴性將是一個反覆出現的主題。3.1. 確定臨界電流 (Ic)臨界電流是超導體的一個基本特性，標誌著從零電阻態到有電阻態的轉變點。
+
+電場判據 (Ec)：
+
+標準定義：Ic 是樣品中感應電場達到預定義標準時的電流，通常為 1 µV/cm 2。
+應用：需要知道電壓抽頭之間的距離 (l)，以便將電壓判據 (Vc = Ec * l) 轉換為 I-V 曲線上的電壓值。對應於 Vc 的電流即為 Ic。
+I-V 曲線通常擬合到冪律 V=V0​+lEc​(I/Ic​)n 以推斷 Ic 20。
+
+
+
+電阻率判據：另一種方法，其中 Ic 定義為樣品達到其正常態電阻率的某一百分比時的電流。
+
+
+dV/dI 峰值法：
+
+臨界電流 Ic 可以從 dV/dI vs. I 曲線的峰值得出 15。該峰值表示電壓變化率最大的點，對應於急劇的轉變。
+所提供的 dV_dI 數據 1 可以針對每個 y_field 繪製其與 appl_current 的關係圖以找到這些峰值。
+
+
+
+偏移判據：將 Ic 定義為電壓從零電壓線偏移一個小的固定值時的電流。
+
+
+注意事項：
+
+噪聲的影響，尤其是在從噪聲較大的 I-V 曲線上確定特定電壓值對應的 Ic 時。
+由於漲落導致的 Tc 附近「圓滑」的 I-V 曲線可能需要使用 dV/dI 方法來更準確地確定 Ic 15。
+Ic 確定方法的選擇（例如，電場判據與 dV/dI 峰值法）可能會產生略微不同的值，尤其對於非均勻樣品或噪聲數據。dV/dI 方法對於分析 Tc 附近的「圓滑」I-V 曲線可能更為可靠 15。
+
+
+3.2. 計算超導轉變 n 值n 值是表徵超導態到正常態轉變銳利程度的關鍵參數。
+
+定義與意義：
+
+n 值由經驗冪律關係 V=Vc​(I/Ic​)n 或更一般地 V=V0​(I/Ic​)n−V1​ 定義 3。 (注意：2 和 20 使用 V=V0​+lEc​(I/Ic​)n，如果 Vc​=lEc​ 且 V1​=−V0​，則兩者一致)。
+它反映了材料的均勻性、磁通釘扎強度和電流耗散機制 3。高 n 值通常表示轉變尖銳且均勻。
+典型值範圍為 10 到 100 21。
+
+
+
+計算方法：
+
+對數-對數擬合：在轉變區域繪製 log(V) vs. log(I)（在減去任何電壓偏移 V1​ 並確保 V>0 之後）。該圖線性部分的斜率即為 n 值。這是一種常規方法 21。
+基於導數的方法：n 值也可以通過 V-I 曲線的一階和二階導數相關聯，公式為：n=(1+I⋅(d2V/dI2)/(dV/dI)) 21。如果 V=K⋅In，則 dV/dI=n⋅K⋅I(n−1)=nV/I，因此 n=(I/V)⋅(dV/dI)。如果直接使用 dV/dI 數據，可能需要先對其積分得到 V，或使用涉及 d2V/dI2 的關係。d2V/dI2 可以從 dV/dI 數值計算得到。
+n 值本身可以是跨越轉變的電流（或電壓）的函數 21。提取單個 n 值可能過於簡化。分析「局部 n 值」在每個 y_field 的轉變過程中的演變可能是一個更高級的特徵。
+
+
+
+對溫度和磁場 (y_field) 的依賴性：
+
+n 值通常依賴於溫度和磁場 3。其隨 y_field 的演變是要提取的一個關鍵特性。
+
+
+3.3. 提取正常態電阻 (Rn)
+定義：材料在其非超導（正常）狀態下的電阻，通常在遠高於 Ic 的電流或高於 Tc 的溫度下觀察到 22。
+從 I-V 曲線：I-V 曲線在高電流 (I >> Ic) 下線性部分的斜率。
+從 dV/dI 曲線：dV/dI 在遠高於 Ic 的電流下的平台值 15。數據 1 顯示，對於 y_field = 0.00285，在高正/負電流下，dV/dI 值穩定在 30-50 歐姆左右，這可能代表 Rn。
+意義：Rn 是與材料電阻率和幾何形狀相關的內禀特性。其對 y_field 的依賴性也可以提供洞察（例如磁阻）。
+3.4. 其他相關參數
+電壓偏移 (V0​ 或 V1​)：如冪律擬合所示 2，這可能源於實驗設置或是擬合參數。
+轉變寬度 (ΔIc​ 或 ΔTc​)：發生轉變的電流或溫度範圍。更尖銳的轉變（更高的 n 值）對應於更窄的轉變寬度 23。這可以從 dV/dI vs. I 曲線量化（例如，峰值的半峰全寬）。
+遲滯現象：Ic 或曲線形狀在增加與減少電流掃描時的差異。可以通過比較正向和負向 appl_current 段的特徵來量化。
+Ic、n 值和 Rn 隨 y_field 變化的關係至關重要。例如，在超導體中，增加磁場 (y_field) 通常會抑制 Ic 並可能加寬轉變（降低 n 值）。將這些提取的參數與 y_field 一起繪圖將揭示重要的物理趨勢。這些導出的曲線本身隨後可以進行進一步的特徵提取（例如，斜率、Ic 降為零時的臨界場值）。4. 通過圖像分析技術進行高級特徵提取本節闡述使用者對應用圖像分析的特定興趣。將實驗數據轉換為圖像形式，可以利用強大的圖像處理算法和機器學習模型進行更深入的特徵提取。4.1. 用於基於圖像分析的數據轉換
+概念：將在不同 y_field 值下獲得的一維曲線（V vs. I 或 dV/dI vs. I）轉換為二維數據矩陣或「圖像」。
+方法1：堆疊圖/熱圖：
+
+將 appl_current 作為一個軸（例如 x 軸）。
+將 y_field 作為另一個軸（例如 y 軸）。
+(x, y) 處的「像素強度」為 meas_voltage_K2 或更可能是 dV_dI 值。
+這會創建一個二維圖，顯示 V(I) 或 dV/dI(I) 特性如何隨 y_field 演變。y_field 的高分辨率在此處非常有利。
+
+
+方法2：特徵圖：
+
+使用常規方法為每個 y_field 提取基本特徵（例如 Ic、n 值、Rn、dV/dI 的峰高/寬度）。
+為每個 y_field 創建這些特徵的一維「圖像」或向量。如果提取了多個此類特徵，它們可以形成多通道一維圖像的通道，或者如果改變了另一個參數（例如溫度，如果可用），則可以排列成二維數組。
+
+
+理由：這種轉換允許應用為二維數據設計的強大圖像處理和機器學習算法 4。將整個數據集（所有 y_field 值的 dV/dI vs. appl_current）視為單個「圖像」或圖像堆疊，可以發現通過孤立分析每個曲線會錯過的全局模式和相關性。例如，集體模式、具有複雜形狀的相邊界，或跨 y_field 參數空間的多個特徵的相關演變。
+4.2. 適用的圖像處理技術一旦數據轉換為圖像格式，就可以應用多種圖像處理技術：
+預處理：對二維圖進行降噪（例如高斯模糊、中值濾波）、對比度增強。
+邊緣檢測：識別二維圖中的急劇轉變（例如，如果 Ic 映射為強度，則為 Ic vs. y_field 圖中超導區域的邊界）。
+分割：
+
+語義分割 4：對二維圖中的區域進行分類（例如，超導態、正常態、轉變區域）。這可能涉及像素級標記。
+識別在二維圖中顯示為不同模式的「異常」區域或缺陷特徵。
+
+
+形態學操作：細化分割區域或提取形狀特徵。
+紋理分析：量化二維圖中轉變的「平滑度」或「粗糙度」，可能與材料均勻性相關。二維圖特定區域（例如 dV/dI vs. appl_current vs. y_field）內的「紋理」或「圖案」本身可以是一個可量化的特徵。例如，機器學習模型可以學習識別噪聲或平滑的轉變，或者 dV/dI 中的振盪行為，這些可能表現為不同的紋理，從而與不同的物理機制或材料質量相關聯。
+4.3. 用於基於圖像的特徵提取的機器學習 4機器學習模型，特別是深度學習模型，非常適合從圖像數據中自動學習複雜特徵。
+卷積神經網絡 (CNN)：
+
+一維 CNN：可直接應用於單個 dV/dI vs. I 曲線（或 V vs. I 曲線），以學習識別諸如峰值、起始點和形狀等指示 Ic、n 值等的特徵（改編自 4）。
+二維 CNN：應用於二維轉換數據（例如 dV/dI vs. appl_current vs. y_field 圖）。CNN 可以學習特徵的空間層次結構，識別複雜模式、邊界（例如臨界表面 Ic(y_field)）或對不同操作機制進行分類。CNN 通過學習到的卷積濾波器提取特徵 4。
+
+
+循環神經網絡 (RNN) / 長短期記憶網絡 (LSTM)：
+
+如果 y_field 代表一個序列參數（例如時間，或系統掃描的磁場），LSTM 可以對 I-V 或 dV/dI 曲線中特徵隨 y_field 變化的演變進行建模 4。
+可用於跟踪 Ic、峰形或 n 值如何演變，並可能預測後續 y_field 值下的行為。如果 y_field 代表時間（例如，如 25 中光伏組件的退化研究，或動態實驗），則卷積 LSTM 4 等技術可直接應用於分析 I-V 特性中特徵的時空演變。這可以揭示變化率、退化開始或恢復動力學。
+
+
+U-NET 架構 4：
+
+最初用於圖像分割，一維 U-NET 可以分割單個曲線內的特徵（例如，準確識別轉變區域）。
+二維 U-NET 可以分割二維圖中的區域（例如，在 appl_current - y_field 平面中描繪超導相邊界）。
+
+
+訓練數據：
+
+可能需要標記數據（例如，帶有手動識別 Ic 的曲線，或分割區域）。
+如 4 中提出的基於物理的合成數據生成可能是一種強大的方法：基於已知的超導體模型（例如，包含冪律、正常電阻和 y_field 依賴性）生成合成的 I-V/dV/dI 曲線來訓練機器學習模型。
+
+
+特徵描述符 26：雖然 26 側重於用於 Tc 預測的化學成分，但使用多樣化的描述符集（統計測量、元素特性）的概念可以啟發思考，從 I-V 曲線或其圖像表示中導出的哪些高級特徵可以輸入到進一步的機器學習模型中，用於分類或回歸任務。
+5. 使用卷積和去卷積增強特徵提取本節重點介紹細化數據和提取內禀特性的方法。這些技術對於從受儀器效應或噪聲影響的測量中恢復真實信號至關重要。5.1. 理解測量系統中的卷積
+概念：測量的實驗數據通常是樣品真實物理響應與儀器響應函數 (IRF) 或點擴散函數 (PSF) 的卷積 6。
+示例：
+
+在掃描隧道譜 (STS) 中，測量的 dI/dV 譜是樣品真實局域態密度 (LDOS) 和針尖態密度 (DOS) 的卷積 6。
+傳感器可能具有有限的響應時間或能量分辨率，導致 V-I 或 dV/dI 曲線中尖銳特徵的展寬或失真。
+
+
+數學表示：M(x)=S(x)∗R(x)，其中 M 是測量信號，S 是真實樣品信號，R 是儀器響應。去卷積的目標是估計 S(x)。
+5.2. dV/dI 和 V-Φ 數據的去卷積技術
+目標：消除測量系統的模糊/失真效應，從而銳化特徵並揭示潛在的內禀特性。
+STS 的數值去卷積 6：
+
+如果使用具有已知 DOS (Δt​) 的超導針尖，可以通過對測量的 dI/dV 譜進行去卷積來獲得樣品的內禀 LDOS (Ds​)。如果使用者的數據來自類似的設置，或者如果 dV_dI 類似於態密度，則這非常相關。
+此過程可以揭示尖銳的能隙內態或其他精細結構 6。
+
+
+基於傅立葉的去卷積：
+
+利用實空間中的卷積在傅立葉空間中是乘法的特性：FT(M)=FT(S)⋅FT(R)。因此，FT(S)=FT(M)/FT(R)。然後 S=IFT(FT(S))。
+對噪聲高度敏感，尤其是在 FT(R) 很小的情況下。通常需要正則化。
+文獻 27 提到了傅立葉變換在處理非週期性圖像時遇到的嚴重相位噪聲問題，並提出了一種基於非凸優化的算法作為替代方案，用於圖像基元恢復，這可能為二維數據圖的高級去卷積方法提供啟發。
+
+
+迭代去卷積方法（例如 Richardson-Lucy, Van Cittert）：
+
+這些方法迭代地改進對真實信號的估計。常用於圖像恢復。
+
+
+正則化方法（例如 Tikhonov, Wiener）：
+
+Tikhonov 正則化 8：明確提到用於從 I-V 數據中獲得低噪聲的二階導數 (d2I/dV2)。它平衡了對數據的保真度與對過於「抖動」解的懲罰。這至關重要，因為數值微分會放大噪聲。
+
+成本函數 Jη​(x)=∥Ax−y∥22​+η∥Dx∥22​ 被最小化。
+正則化參數 η 是關鍵，可以使用 L 曲線法或平衡原則等方法選擇 8。
+雖然 8 將其應用於 d2I/dV2，但正則化微分的原理直接適用於從 V(I) 數據中獲得更清晰的 dV/dI，或者如果需要用於 n 值計算，甚至更清晰的 "d(dV/dI)/dI" 21。
+
+
+Wiener 去卷積：如果在信號和噪聲功率譜已知或可以估計的情況下，它在均方誤差意義上是最優的。
+
+
+去卷積的有效性在很大程度上取決於儀器響應函數 (IRF) 的準確模型或測量。如果 IRF 未知或表徵不佳，去卷積可能會引入偽影。對於使用者的數據，識別「模糊」的主要來源（例如，傳感器響應、電子濾波、熱展寬）是先決條件 6。
+5.3. 從去卷積譜/曲線中提取特徵
+銳化峰值：去卷積可以使 dV/dI 或 V-Φ 數據中的峰值變窄，從而可以更精確地確定 Ic、轉變寬度或能隙（如果 y_field 與能量相關）。
+重疊特徵的分辨：如果多個物理過程貢獻了間隔很近的特徵，去卷積可能會將它們分開。
+真實幅度和線型：恢復光譜特徵更準確的幅度和內禀線型。
+降噪：許多去卷積算法固有地包含噪聲濾波或將其作為預處理步驟（例如 8 中的 Tikhonov 正則化）。
+去卷積與圖像分析相結合時尤其強大。例如，如果形成了二維數據圖（dV/dI vs. appl_current vs. y_field），則可以沿每個 y_field 軌跡的 appl_current 軸應用去卷積（以銳化轉變），或者如果 y_field 方向也存在模糊，則甚至可以作為二維去卷積。
+去卷積算法及其參數（如 Tikhonov 正則化中的正則化參數 η 8）的選擇並非易事，且依賴於數據。應指導使用者如何選擇/優化這些參數，可能通過合成數據測試或通過評估已知校準樣品的結果。6. 綜合策略與實踐建議為了有效地從複雜的實驗數據中提取特徵值，建議採用一個集成了常規分析、圖像處理和卷積/去卷積技術的協同工作流程。6.1. 協同工作流程
+步驟1：數據預處理與清洗：
+
+處理 1 中的異常值或缺失數據點。
+進行初步噪聲評估。文獻 28 中討論的 AC+DC 技術旨在實現低噪聲 I-V 測量，這將是有益的。
+
+
+步驟2：常規特徵提取：
+
+計算每個 y_field 值的 Ic、n 值、Rn。這提供了對主要特徵的基線理解和數據集。
+繪製這些主要特徵與 y_field 的關係圖，以觀察總體趨勢（例如 Ic vs. B 場）。
+
+
+步驟3：用於圖像分析的數據轉換：
+
+創建二維圖（例如 dV/dI vs. appl_current vs. y_field）。
+
+
+步驟4：去卷積（可選但建議用於細化）：
+
+如果儀器展寬顯著或導數中的噪聲是一個問題，則應用去卷積/正則化微分（例如，從 V(I) 中獲得 dV/dI 的 Tikhonov 方法，或銳化現有的 dV/dI）。
+從去卷積曲線中重新提取常規特徵以提高準確性。
+使用去卷積數據更新二維圖。
+
+
+步驟5：基於圖像處理和機器學習的特徵提取：
+
+將分割、CNN 或 LSTM 應用於二維圖或曲線序列，以識別高階特徵、模式和相關性。
+
+
+步驟6：物理解釋與驗證：
+
+將所有提取的特徵與材料的基本物理特性和實驗條件聯繫起來。
+對照理論模型或已知的材料行為驗證研究結果。
+這個過程本質上是迭代的。常規提取的特徵可以指導圖像分析的設置（例如，感興趣區域）。圖像分析的結果可能會促使重新評估去卷積參數或常規擬合。
+
+
+6.2. 軟件工具與庫
+Python 生態系統：
+
+NumPy, Pandas：用於數據操作和處理 CSV 數據 1。
+SciPy：用於數值運算、曲線擬合（例如冪律擬合 n 值）、信號處理（濾波、FFT、可能的一些去卷積算法如 Wiener）。例如 scipy.signal.deconvolve 或 scipy.signal.wiener。
+Scikit-image：用於圖像處理任務（分割、特徵檢測、形態學操作）。
+OpenCV：另一個強大的計算機視覺和圖像處理庫。
+Matplotlib, Seaborn：用於繪製一維曲線和二維熱圖。
+TensorFlow, PyTorch, Keras：用於實現 CNN、LSTM 和其他機器學習模型。
+
+
+R：文獻 25 提到了一個 R 中的開源包，用於光伏組件中數據驅動的 I-V 特徵提取，這可能提供啟發或可調整的代碼。
+MATLAB：常用於工程和物理領域的數據分析和信號處理，帶有用於圖像處理和曲線擬合的工具箱。
+6.3. 數據質量與偽影處理
+低噪聲原始數據的重要性 28。
+識別並可能校正：
+
+電壓偏移 2。
+由於電流傳輸不完全導致的線性電壓分量 2。
+在應用微分或去卷積之前處理噪聲尖峰或測量偽影。
+
+
+dV/dI（如果未提供）或 d2V/dI2 的微分方法的選擇至關重要；數值微分會放大噪聲 8。首選正則化方法如 Tikhonov 8。
+使用者尋求的「本徵值」可能不僅僅是單個標量值（如每個 y_field 的一個 Ic），而可能是整個函數或模式（例如 Ic(y_field) 曲線的形狀、某個區域 dV/dI 圖的紋理，或響應特定物理現象的已學習 CNN 濾波器的參數）。記錄提取的特徵對各種處理選擇（例如去卷積參數、機器學習模型架構）的敏感性對於得出可靠的科學結論至關重要。7. 結論7.1. 方法學回顧本報告詳細闡述了從包含外部磁通、施加電流、測量電壓和計算 dV/dI 的實驗數據中提取特徵值的綜合方法。報告涵蓋了傳統的參數提取技術，如臨界電流 (Ic)、n 值和正常態電阻 (Rn) 的確定。更重要的是，報告深入探討了如何將先進的圖像分析和卷積/去卷積技術應用於此類數據，以揭示更深層次的物理信息。7.2. 協同效應的力量通過將數據轉換為圖像格式，可以利用圖像處理算法和機器學習模型（如 CNN 和 LSTM）來識別複雜的模式、相邊界和特徵演化。卷積/去卷積技術，特別是 Tikhonov 正則化等方法，有助於從測量信號中分離內禀材料響應，減少噪聲並銳化特徵。這些先進方法的整合提供了一個比任何單一方法都更全面、更細緻地理解材料特性的框架。7.3. 推動材料表徵這些先進的分析框架有潛力加速實驗物理學，特別是在超導體或新型電子材料等複雜系統中的發現並深化理解。最終目標是將這些提取的「本徵值」或特徵與描述所研究材料的特定物理模型或理論聯繫起來。例如，Ic 的 y_field 依賴性如何與 Ginzburg-Landau 理論或特定的釘扎模型相比較。7.4. 未來方向未來的發展可能包括在實驗過程中利用機器學習進行實時特徵提取，或開發更複雜的物理信息AI模型。此外，為這些高級分析開發標準化、可共享的工作流程和開源工具（受 25 中光伏組件和 2 中高溫超導數據庫的啟發）將極大地有益於材料科學界，促進研究的可重複性和協作。JSON{"outline_parent_id": "ROOT", "expert_persona": "I am a PhD researcher in experimental physics; expert in advanced data/image analysis and technical report writing for complex datasets."}
+引用的著作
+164.csv
+snf.ieeecsc.org, 檢索日期：6月 1, 2025， https://snf.ieeecsc.org/files/ieeecsc/slides/doiST546_Wimbush_4MPo1C-07.pdf
+repository.up.ac.za, 檢索日期：6月 1, 2025， https://repository.up.ac.za/bitstreams/274c45b6-fb91-45da-81bd-88e8fe2cdb28/download
+Physics-Based Synthetic Data Model for Automated Segmentation in ..., 檢索日期：6月 1, 2025， https://academic.oup.com/mam/article/31/1/ozae130/7953289
+Image and point-cloud classification for jet analysis in high-energy physics: A survey, 檢索日期：6月 1, 2025， https://journal.hep.com.cn/fop/EN/10.15302/frontphys.2025.035301
+Spatially dispersing Yu-Shiba-Rusinov states in the unconventional ..., 檢索日期：6月 1, 2025， https://pmc.ncbi.nlm.nih.gov/articles/PMC7804303/
+Convolution Effects in Superconductive Tunneling | Request PDF - ResearchGate, 檢索日期：6月 1, 2025， https://www.researchgate.net/publication/5617473_Convolution_Effects_in_Superconductive_Tunneling
+Simplified inelastic electron tunneling spectroscopy based on low ..., 檢索日期：6月 1, 2025， https://pmc.ncbi.nlm.nih.gov/articles/PMC9649763/
+11 Superconductivity and SQUID magnetometer, 檢索日期：6月 1, 2025， https://institut2a.physik.rwth-aachen.de/de/teaching/praktikum/Anleitungen/vers11_SQUID_07-05-2021.pdf
+Scanning SQUID microscopy - Wikipedia, 檢索日期：6月 1, 2025， https://en.wikipedia.org/wiki/Scanning_SQUID_microscopy
+Highly Sensitive Tunable Magnetometer Based on Superconducting Quantum Interference Device - MDPI, 檢索日期：6月 1, 2025， https://www.mdpi.com/1424-8220/23/7/3558
+Typical set of V-Φ characteristics of current sensor SQUID CE1K2 ..., 檢索日期：6月 1, 2025， https://www.researchgate.net/figure/Typical-set-of-V-PH-characteristics-of-current-sensor-SQUID-CE1K2-top-and-CE1K34_fig2_316845048
+TN2513-P SQUID Practicum Manual, 檢索日期：6月 1, 2025， https://nsweb.tn.tudelft.nl/~gsteele/SQUID_practicum/TN2513-P%20SQUID%20Practicum%20Manual.html
+Imm2019Buffalo_HighTC - ALPhA (Advanced Laboratory Physics Association), 檢索日期：6月 1, 2025， https://advlab.org/Imm2019Buffalo_HighTC
+(a) I-V curve and differential resistance R D = dV/dI versus current I ..., 檢索日期：6月 1, 2025， https://www.researchgate.net/figure/a-I-V-curve-and-differential-resistance-R-D-dV-dI-versus-current-I-The-critical_fig2_334309135
+Critical current measurement methods: quantitative evaluation - National Institute of Standards and Technology, 檢索日期：6月 1, 2025， https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=30406
+Magnetization control of the critical current in a S-(S/F)-S superconducting switch, 檢索日期：6月 1, 2025， https://pubs.aip.org/aip/apl/article/124/16/162605/3283288/Magnetization-control-of-the-critical-current-in-a
+Characteristics of Superconductivity - Akimitsu Laboratory Homepage, 檢索日期：6月 1, 2025， http://www.okayama-u.ac.jp/user/akimitsu/achievements/study_sc_chara_eng.html
+On the fundamental definition of critical current in superconductors - ResearchGate, 檢索日期：6月 1, 2025， https://www.researchgate.net/publication/318670891_On_the_fundamental_definition_of_critical_current_in_superconductors
+On the fundamental definition of critical current in ... - arXiv, 檢索日期：6月 1, 2025， https://arxiv.org/pdf/1707.07395
+tsapps.nist.gov, 檢索日期：6月 1, 2025， https://tsapps.nist.gov/publication/get_pdf.cfm?pub_id=30415
+P451/551 Lab: Superconducting Quantum Interference Devices (SQUIDs), 檢索日期：6月 1, 2025， https://web.physics.indiana.edu/courses/p451/experiments/SQUID_expt.pdf
+Superconducting Transition Width in Pure Gallium Single Crystals | Phys. Rev., 檢索日期：6月 1, 2025， https://link.aps.org/doi/10.1103/PhysRev.165.556
+(PDF) Current distribution and transition width in superconducting transition-edge sensors, 檢索日期：6月 1, 2025， https://www.researchgate.net/publication/233917746_Current_distribution_and_transition_width_in_superconductingtransition-edge_sensors
+Data-Driven I-V Feature Extraction for Photovoltaic Modules - Fraunhofer-Publica, 檢索日期：6月 1, 2025， https://publica.fraunhofer.de/entities/publication/5ca04673-c342-4d79-8890-bd2dcd409fd8
+Machine-Learning Predictions of Critical Temperatures from Chemical Compositions of Superconductors - ACS Publications, 檢索日期：6月 1, 2025， https://pubs.acs.org/doi/10.1021/acs.jcim.4c01137
+Dictionary learning in Fourier-transform scanning tunneling spectroscopy - PMC, 檢索日期：6月 1, 2025， https://pmc.ncbi.nlm.nih.gov/articles/PMC7044214/
+1. Introduction, 檢索日期：6月 1, 2025， https://hrcak.srce.hr/file/432231
+
