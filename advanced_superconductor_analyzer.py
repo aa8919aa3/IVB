@@ -273,64 +273,6 @@ def fast_n_value_calculation(current_array, voltage_array):
     else:
         return np.nan
 
-# ============================================================================
-# 额外的优化工具函数
-# ============================================================================
-
-@lru_cache(maxsize=64)
-def get_voltage_thresholds(max_voltage):
-    """缓存电压阈值计算"""
-    return 0.1 * max_voltage, 0.9 * max_voltage
-
-@njit(fastmath=True, cache=True)
-def fast_n_value_calculation(current_array, voltage_array):
-    """快速n值计算（numba优化）"""
-    if len(current_array) < 2 or len(voltage_array) < 2:
-        return np.nan
-    
-    # 找到最大电压
-    max_voltage = 0.0
-    for i in range(len(voltage_array)):
-        abs_v = abs(voltage_array[i])
-        if abs_v > max_voltage:
-            max_voltage = abs_v
-    
-    if max_voltage == 0:
-        return np.nan
-    
-    v10 = 0.1 * max_voltage
-    v90 = 0.9 * max_voltage
-    
-    # 找到符合条件的点
-    valid_indices = []
-    for i in range(len(voltage_array)):
-        abs_v = abs(voltage_array[i])
-        if abs_v >= v10 and abs_v <= v90 and current_array[i] != 0:
-            valid_indices.append(i)
-    
-    if len(valid_indices) < 2:
-        return np.nan
-    
-    # 使用第一个和最后一个有效点
-    first_idx = valid_indices[0]
-    last_idx = valid_indices[-1]
-    
-    v_first = abs(voltage_array[first_idx])
-    v_last = abs(voltage_array[last_idx])
-    i_first = abs(current_array[first_idx])
-    i_last = abs(current_array[last_idx])
-    
-    if v_first <= 0 or v_last <= 0 or i_first <= 0 or i_last <= 0:
-        return np.nan
-    
-    log_v_ratio = np.log(v_last / v_first)
-    log_i_ratio = np.log(i_last / i_first)
-    
-    if log_i_ratio != 0:
-        return log_v_ratio / log_i_ratio
-    else:
-        return np.nan
-
 class AdvancedSuperconductorAnalyzer:
     """進階超導體數據分析器"""
     
@@ -365,6 +307,30 @@ class AdvancedSuperconductorAnalyzer:
         # 自動檢測電壓列名稱
         self.voltage_column = None
         
+    def _ensure_dvdi_calculation(self):
+        """確保數據中有 dV/dI 列，如果沒有則計算"""
+        if 'dV_dI' not in self.data.columns:
+            print("📊 計算 dV/dI 數據...")
+            
+            dV_dI_values = []
+            field_groups = self.data.groupby('y_field')
+            
+            for field, field_data in field_groups:
+                if len(field_data) > 1:
+                    current = np.array(field_data['appl_current'].values)
+                    voltage = np.array(field_data[self.voltage_column].values)
+                    
+                    # 計算梯度
+                    dV_dI = np.gradient(voltage, current)
+                    dV_dI_values.extend(dV_dI)
+                else:
+                    dV_dI_values.append(0)
+            
+            self.data['dV_dI'] = dV_dI_values
+            print("✅ dV/dI 計算完成")
+        else:
+            print("✅ dV/dI 數據已存在")
+
     def load_and_preprocess_data(self):
         """載入和預處理數據 - 增強版"""
         print("=== Step 1: Enhanced Data Preprocessing and Cleaning ===")
@@ -394,6 +360,9 @@ class AdvancedSuperconductorAnalyzer:
             print(f"\n⚠️  Missing values found: {missing_before}")
             self.data = self.data.dropna()
             print(f"✅ Shape after cleaning: {self.data.shape}")
+        
+        # 確保 dV/dI 計算
+        self._ensure_dvdi_calculation()
         
         # 進階異常值檢測和處理
         self._detect_and_handle_outliers()
@@ -1133,11 +1102,19 @@ class AdvancedSuperconductorAnalyzer:
     def _plot_critical_current_analysis(self, ax):
         """繪製臨界電流分析"""
         if 'Ic_average' in self.features.columns:
-            ic_data = self.features['Ic_average'].dropna() * 1e6
-            y_fields = self.features.loc[ic_data.index, 'y_field']
+            # 獲取有效的 Ic 數據
+            valid_mask = self.features['Ic_average'].notna()
+            ic_data = self.features.loc[valid_mask, 'Ic_average'] * 1e6
+            y_fields = self.features.loc[valid_mask, 'y_field']
             
-            ax.plot(y_fields, ic_data, 'b-', alpha=0.7, linewidth=1)
-            ax.scatter(y_fields, ic_data, c='red', s=10, alpha=0.7)
+            # 按照 y_field 排序以確保正確的連線順序
+            sort_indices = np.argsort(y_fields)
+            y_fields_sorted = y_fields.iloc[sort_indices]
+            ic_data_sorted = ic_data.iloc[sort_indices]
+            
+            # 繪製排序後的數據
+            ax.plot(y_fields_sorted, ic_data_sorted, 'b-', alpha=0.7, linewidth=1)
+            ax.scatter(y_fields_sorted, ic_data_sorted, c='red', s=10, alpha=0.7)
             ax.set_xlabel('y_field')
             ax.set_ylabel('Critical Current (µA)')
             ax.set_title('Critical Current vs Field')
@@ -1385,18 +1362,24 @@ class AdvancedSuperconductorAnalyzer:
         try:
             if 'transition_width' in self.features.columns:
                 # 繪製轉變寬度隨 y_field 的變化
-                tw_data = self.features['transition_width'].dropna() * 1e6  # Convert to µA
-                y_fields = self.features.loc[tw_data.index, 'y_field']
+                valid_mask = self.features['transition_width'].notna()
+                tw_data = self.features.loc[valid_mask, 'transition_width'] * 1e6  # Convert to µA
+                y_fields = self.features.loc[valid_mask, 'y_field']
                 
-                ax.plot(y_fields, tw_data, 'g-o', markersize=3, linewidth=1.5, alpha=0.8)
+                # 按照 y_field 排序以確保正確的連線順序
+                sort_indices = np.argsort(y_fields)
+                y_fields_sorted = y_fields.iloc[sort_indices]
+                tw_data_sorted = tw_data.iloc[sort_indices]
+                
+                ax.plot(y_fields_sorted, tw_data_sorted, 'g-o', markersize=3, linewidth=1.5, alpha=0.8)
                 ax.set_xlabel('y_field')
                 ax.set_ylabel('Transition Width (µA)')
                 ax.set_title('Superconducting Transition Width')
                 ax.grid(True, alpha=0.3)
                 
                 # 添加統計信息
-                mean_tw = tw_data.mean()
-                std_tw = tw_data.std()
+                mean_tw = tw_data_sorted.mean()
+                std_tw = tw_data_sorted.std()
                 ax.text(0.05, 0.95, f'Mean: {mean_tw:.2f} µA\nStd: {std_tw:.2f} µA', 
                        transform=ax.transAxes, verticalalignment='top', 
                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
@@ -1469,6 +1452,9 @@ class AdvancedSuperconductorAnalyzer:
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
             print(f"📁 Created output directory: {output_dir}")
+        
+        # 確保計算 dV/dI 數據
+        self._ensure_dvdi_calculation()
         
         # 檢查可用的臨界電流類型
         has_positive = 'Ic_positive' in self.features.columns
@@ -1626,7 +1612,7 @@ class AdvancedSuperconductorAnalyzer:
             if self.clustering_results:
                 print(f"  Optimal Clusters (K-means): {self.clustering_results['best_k']}")
                 print(f"  Silhouette Score: {self.clustering_results['silhouette_score']:.3f}")
-                print(f"  DBSCAN Clusters: {self.clustering_results['n_clusters_dbscan']}")
+                print(f"   DBSCAN Clusters: {self.clustering_results['n_clusters_dbscan']}")
         
         # 圖像分析
         if self.images:
@@ -1715,7 +1701,7 @@ class AdvancedSuperconductorAnalyzer:
 
 def main():
     """主函數 - 演示如何使用分析器"""
-    
+
     # 配置參數
     config = {
         'outlier_threshold': 3.0,
@@ -1725,82 +1711,115 @@ def main():
         'advanced_features': True,
         'image_resolution': (150, 200)
     }
-    
-    # 自動掃描 csv 資料夾中的所有 .csv 檔案
+
     import os
     import glob
-    
-    csv_folder = 'csv'
-    if os.path.exists(csv_folder):
-        # 尋找所有 .csv 檔案
-        csv_files = glob.glob(os.path.join(csv_folder, '*.csv'))
-        datasets = [os.path.basename(f) for f in csv_files]
-        datasets.sort()  # 按檔名排序
+    import sys
+
+    # 檢查命令列參數
+    if len(sys.argv) > 1:
+        # 🎯 單一檔案分析模式
+        dataset_path = sys.argv[1]
         
-        print(f"🔍 發現 {len(datasets)} 個 CSV 檔案:")
-        for i, dataset in enumerate(datasets, 1):
-            print(f"  {i}. {dataset}")
-    else:
-        # 備用方案 - 如果 csv 資料夾不存在
-        datasets = ['164.csv', '317.csv', '335.csv', '396.csv', '397.csv', '500.csv']
-        print("⚠️  使用預設資料集清單")
-    
-    print(f"\n🚀 開始分析 {len(datasets)} 個資料集...")
-    
-    # 統計結果
-    successful_analyses = []
-    failed_analyses = []
-    
-    for dataset in datasets:
+        print(f"🔬 單一檔案分析模式")
+        print(f"📂 目標檔案: {dataset_path}")
+        
+        if not os.path.exists(dataset_path):
+            print(f"❌ 錯誤：檔案 '{dataset_path}' 不存在")
+            print(f"💡 請確認檔案路徑是否正確")
+            return
+        
         try:
-            print(f"\n{'='*60}")
-            print(f"🔬 Analyzing dataset: {dataset}")
-            print(f"{'='*60}")
-            
-            # 創建分析器
-            dataset_path = os.path.join(csv_folder, dataset) if os.path.exists(csv_folder) else dataset
             analyzer = AdvancedSuperconductorAnalyzer(dataset_path, config)
-            
-            # 執行分析
             results = analyzer.run_complete_analysis()
             
             if results:
-                successful_analyses.append(dataset)
-                print(f"✅ Successfully analyzed {dataset}")
+                print(f"\n🎉 成功完成分析！")
+                print(f"📊 可視化結果: {results['output_file']}")
+                if results['ic_csv_file']:
+                    print(f"📄 Ic 數據: {results['ic_csv_file']}")
             else:
-                failed_analyses.append(dataset)
-                print(f"❌ Failed to analyze {dataset}")
+                print(f"❌ 分析失敗")
                 
-        except FileNotFoundError:
-            failed_analyses.append(dataset)
-            print(f"⚠️  Dataset {dataset} not found, skipping...")
         except Exception as e:
-            failed_analyses.append(dataset)
-            print(f"❌ Error analyzing {dataset}: {e}")
+            print(f"❌ 分析過程中發生錯誤: {e}")
             import traceback
             traceback.print_exc()
-    
-    # 輸出最終統計報告
-    print(f"\n{'='*80}")
-    print("                    🎯 BATCH ANALYSIS SUMMARY")
-    print(f"{'='*80}")
-    print(f"📊 Total datasets: {len(datasets)}")
-    print(f"✅ Successful analyses: {len(successful_analyses)}")
-    print(f"❌ Failed analyses: {len(failed_analyses)}")
-    
-    if successful_analyses:
-        print(f"\n🎉 Successfully analyzed:")
-        for dataset in successful_analyses:
-            print(f"  ✓ {dataset}")
-    
-    if failed_analyses:
-        print(f"\n⚠️  Failed to analyze:")
-        for dataset in failed_analyses:
-            print(f"  ✗ {dataset}")
-    
-    success_rate = len(successful_analyses) / len(datasets) * 100 if datasets else 0
-    print(f"\n📈 Success rate: {success_rate:.1f}%")
-    print(f"{'='*80}")
+
+    else:
+        # 🔄 批次分析模式
+        # 自動掃描 csv 資料夾中的所有 .csv 檔案
+        csv_folder = 'csv'
+        if os.path.exists(csv_folder):
+            # 尋找所有 .csv 檔案
+            csv_files = glob.glob(os.path.join(csv_folder, '*.csv'))
+            datasets = [os.path.basename(f) for f in csv_files]
+            datasets.sort()  # 按檔名排序
+            
+            print(f"🔍 發現 {len(datasets)} 個 CSV 檔案:")
+            for i, dataset in enumerate(datasets, 1):
+                print(f"  {i}. {dataset}")
+        else:
+            # 備用方案 - 如果 csv 資料夾不存在
+            datasets = ['164.csv', '317.csv', '335.csv', '396.csv', '397.csv', '500.csv']
+            print("⚠️  使用預設資料集清單")
+        
+        print(f"\n🚀 開始分析 {len(datasets)} 個資料集...")
+        
+        # 統計結果
+        successful_analyses = []
+        failed_analyses = []
+        
+        for dataset in datasets:
+            try:
+                print(f"\n{'='*60}")
+                print(f"🔬 Analyzing dataset: {dataset}")
+                print(f"{'='*60}")
+                
+                # 創建分析器
+                dataset_path = os.path.join(csv_folder, dataset) if os.path.exists(csv_folder) else dataset
+                analyzer = AdvancedSuperconductorAnalyzer(dataset_path, config)
+                
+                # 執行分析
+                results = analyzer.run_complete_analysis()
+                
+                if results:
+                    successful_analyses.append(dataset)
+                    print(f"✅ Successfully analyzed {dataset}")
+                else:
+                    failed_analyses.append(dataset)
+                    print(f"❌ Failed to analyze {dataset}")
+                    
+            except FileNotFoundError:
+                failed_analyses.append(dataset)
+                print(f"⚠️  Dataset {dataset} not found, skipping...")
+            except Exception as e:
+                failed_analyses.append(dataset)
+                print(f"❌ Error analyzing {dataset}: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # 輸出最終統計報告
+        print(f"\n{'='*80}")
+        print("                    🎯 BATCH ANALYSIS SUMMARY")
+        print(f"{'='*80}")
+        print(f"📊 Total datasets: {len(datasets)}")
+        print(f"✅ Successful analyses: {len(successful_analyses)}")
+        print(f"❌ Failed analyses: {len(failed_analyses)}")
+        
+        if successful_analyses:
+            print(f"\n🎉 Successfully analyzed:")
+            for dataset in successful_analyses:
+                print(f"  ✓ {dataset}")
+        
+        if failed_analyses:
+            print(f"\n⚠️  Failed to analyze:")
+            for dataset in failed_analyses:
+                print(f"  ✗ {dataset}")
+        
+        success_rate = len(successful_analyses) / len(datasets) * 100 if datasets else 0
+        print(f"\n📈 Success rate: {success_rate:.1f}%")
+        
 
 if __name__ == '__main__':
     main()
