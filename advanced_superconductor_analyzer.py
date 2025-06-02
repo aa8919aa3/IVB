@@ -17,9 +17,319 @@ import seaborn as sns
 import warnings
 warnings.filterwarnings('ignore')
 
+# 性能优化相关导入
+try:
+    from numba import jit, njit, prange
+    NUMBA_AVAILABLE = True
+except ImportError:
+    print("⚠️ Numba not available, falling back to standard Python")
+    NUMBA_AVAILABLE = False
+    # 创建空装饰器以保持代码兼容性
+    def jit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+    def njit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+    prange = range
+
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
+import time
+import os
+
 # matplotlib 設定確保中文字體顯示
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'SimHei', 'Arial Unicode MS']
 plt.rcParams['axes.unicode_minus'] = False
+
+# ============================================================================
+# NUMBA 优化的数值计算函数
+# ============================================================================
+
+@njit(fastmath=True, cache=True)
+def fast_percentile(data, percentile):
+    """快速百分位数计算"""
+    if len(data) == 0:
+        return np.nan
+    sorted_data = np.sort(data.flatten())
+    n = len(sorted_data)
+    index = percentile / 100.0 * (n - 1)
+    lower = int(np.floor(index))
+    upper = int(np.ceil(index))
+    if lower == upper:
+        return sorted_data[lower]
+    else:
+        weight = index - lower
+        return sorted_data[lower] * (1 - weight) + sorted_data[upper] * weight
+
+@njit(fastmath=True, cache=True)
+def fast_skewness(data):
+    """快速偏度计算"""
+    if len(data) < 3:
+        return np.nan
+    
+    data_clean = data[~np.isnan(data)]
+    n = len(data_clean)
+    if n < 3:
+        return np.nan
+    
+    mean = np.mean(data_clean)
+    std = np.std(data_clean)
+    if std == 0:
+        return np.nan
+    
+    sum_cubed = 0.0
+    for i in range(n):
+        sum_cubed += ((data_clean[i] - mean) / std) ** 3
+    
+    return (n / ((n - 1) * (n - 2))) * sum_cubed
+
+@njit(fastmath=True, cache=True)
+def fast_kurtosis(data):
+    """快速峰度计算"""
+    if len(data) < 4:
+        return np.nan
+    
+    data_clean = data[~np.isnan(data)]
+    n = len(data_clean)
+    if n < 4:
+        return np.nan
+    
+    mean = np.mean(data_clean)
+    std = np.std(data_clean)
+    if std == 0:
+        return np.nan
+    
+    sum_fourth = 0.0
+    for i in range(n):
+        sum_fourth += ((data_clean[i] - mean) / std) ** 4
+    
+    kurtosis = (n * (n + 1) / ((n - 1) * (n - 2) * (n - 3))) * sum_fourth
+    correction = 3 * (n - 1) ** 2 / ((n - 2) * (n - 3))
+    return kurtosis - correction
+
+@njit(fastmath=True, cache=True)
+def fast_find_peaks(data, min_height=None):
+    """快速峰值检测"""
+    n = len(data)
+    if n < 3:
+        return np.array([], dtype=np.int32)
+    
+    peaks = []
+    for i in range(1, n - 1):
+        if data[i] > data[i-1] and data[i] > data[i+1]:
+            if min_height is None or data[i] >= min_height:
+                peaks.append(i)
+    
+    return np.array(peaks, dtype=np.int32)
+
+@njit(fastmath=True, cache=True)
+def fast_outlier_detection(data, threshold=3.0):
+    """快速异常值检测（基于IQR）"""
+    if len(data) < 4:
+        return np.zeros(len(data), dtype=np.bool_)
+    
+    q1 = fast_percentile(data, 25)
+    q3 = fast_percentile(data, 75)
+    iqr = q3 - q1
+    
+    if iqr == 0:
+        return np.zeros(len(data), dtype=np.bool_)
+    
+    lower_bound = q1 - threshold * iqr
+    upper_bound = q3 + threshold * iqr
+    
+    outliers = np.zeros(len(data), dtype=np.bool_)
+    for i in range(len(data)):
+        outliers[i] = data[i] < lower_bound or data[i] > upper_bound
+    
+    return outliers
+
+@njit(fastmath=True, cache=True)
+def fast_smooth_data(data, window_size):
+    """快速数据平滑（移动平均）"""
+    if len(data) < window_size or window_size < 1:
+        return data.copy()
+    
+    smoothed = np.zeros_like(data)
+    half_window = window_size // 2
+    
+    for i in range(len(data)):
+        start = max(0, i - half_window)
+        end = min(len(data), i + half_window + 1)
+        smoothed[i] = np.mean(data[start:end])
+    
+    return smoothed
+
+@njit(fastmath=True, cache=True)
+def fast_critical_current_detection(current, dvdi, threshold_factor=0.1):
+    """快速临界电流检测"""
+    if len(current) != len(dvdi) or len(current) < 3:
+        return np.nan, np.nan
+    
+    # 找到dV/dI的最大值
+    max_dvdi_idx = np.argmax(dvdi)
+    max_dvdi = dvdi[max_dvdi_idx]
+    
+    if max_dvdi <= 0:
+        return np.nan, np.nan
+    
+    threshold = max_dvdi * threshold_factor
+    
+    # 向前搜索临界电流
+    ic_pos = np.nan
+    ic_neg = np.nan
+    
+    # 正向临界电流
+    for i in range(max_dvdi_idx, len(dvdi)):
+        if dvdi[i] >= threshold:
+            ic_pos = current[i]
+            break
+    
+    # 负向临界电流  
+    for i in range(max_dvdi_idx, -1, -1):
+        if dvdi[i] >= threshold:
+            ic_neg = current[i]
+            break
+    
+    return ic_pos, ic_neg
+
+# ============================================================================
+# LRU CACHE 装饰的配置函数
+# ============================================================================
+
+@lru_cache(maxsize=128)
+def get_optimal_threads():
+    """获取最优线程数"""
+    return min(multiprocessing.cpu_count(), 8)
+
+@lru_cache(maxsize=32)
+def get_image_grid_size(n_fields, n_current_points):
+    """获取最优的图像网格大小"""
+    # 根据数据量动态调整网格大小
+    if n_fields * n_current_points > 100000:
+        return (min(200, n_fields), min(150, n_current_points))
+    else:
+        return (min(300, n_fields), min(200, n_current_points))
+
+# ============================================================================
+# 额外的优化工具函数
+# ============================================================================
+
+@lru_cache(maxsize=64)
+def get_voltage_thresholds(max_voltage):
+    """缓存电压阈值计算"""
+    return 0.1 * max_voltage, 0.9 * max_voltage
+
+@njit(fastmath=True, cache=True)
+def fast_n_value_calculation(current_array, voltage_array):
+    """快速n值计算（numba优化）"""
+    if len(current_array) < 2 or len(voltage_array) < 2:
+        return np.nan
+    
+    # 找到最大电压
+    max_voltage = 0.0
+    for i in range(len(voltage_array)):
+        abs_v = abs(voltage_array[i])
+        if abs_v > max_voltage:
+            max_voltage = abs_v
+    
+    if max_voltage == 0:
+        return np.nan
+    
+    v10 = 0.1 * max_voltage
+    v90 = 0.9 * max_voltage
+    
+    # 找到符合条件的点
+    valid_indices = []
+    for i in range(len(voltage_array)):
+        abs_v = abs(voltage_array[i])
+        if abs_v >= v10 and abs_v <= v90 and current_array[i] != 0:
+            valid_indices.append(i)
+    
+    if len(valid_indices) < 2:
+        return np.nan
+    
+    # 使用第一个和最后一个有效点
+    first_idx = valid_indices[0]
+    last_idx = valid_indices[-1]
+    
+    v_first = abs(voltage_array[first_idx])
+    v_last = abs(voltage_array[last_idx])
+    i_first = abs(current_array[first_idx])
+    i_last = abs(current_array[last_idx])
+    
+    if v_first <= 0 or v_last <= 0 or i_first <= 0 or i_last <= 0:
+        return np.nan
+    
+    log_v_ratio = np.log(v_last / v_first)
+    log_i_ratio = np.log(i_last / i_first)
+    
+    if log_i_ratio != 0:
+        return log_v_ratio / log_i_ratio
+    else:
+        return np.nan
+
+# ============================================================================
+# 额外的优化工具函数
+# ============================================================================
+
+@lru_cache(maxsize=64)
+def get_voltage_thresholds(max_voltage):
+    """缓存电压阈值计算"""
+    return 0.1 * max_voltage, 0.9 * max_voltage
+
+@njit(fastmath=True, cache=True)
+def fast_n_value_calculation(current_array, voltage_array):
+    """快速n值计算（numba优化）"""
+    if len(current_array) < 2 or len(voltage_array) < 2:
+        return np.nan
+    
+    # 找到最大电压
+    max_voltage = 0.0
+    for i in range(len(voltage_array)):
+        abs_v = abs(voltage_array[i])
+        if abs_v > max_voltage:
+            max_voltage = abs_v
+    
+    if max_voltage == 0:
+        return np.nan
+    
+    v10 = 0.1 * max_voltage
+    v90 = 0.9 * max_voltage
+    
+    # 找到符合条件的点
+    valid_indices = []
+    for i in range(len(voltage_array)):
+        abs_v = abs(voltage_array[i])
+        if abs_v >= v10 and abs_v <= v90 and current_array[i] != 0:
+            valid_indices.append(i)
+    
+    if len(valid_indices) < 2:
+        return np.nan
+    
+    # 使用第一个和最后一个有效点
+    first_idx = valid_indices[0]
+    last_idx = valid_indices[-1]
+    
+    v_first = abs(voltage_array[first_idx])
+    v_last = abs(voltage_array[last_idx])
+    i_first = abs(current_array[first_idx])
+    i_last = abs(current_array[last_idx])
+    
+    if v_first <= 0 or v_last <= 0 or i_first <= 0 or i_last <= 0:
+        return np.nan
+    
+    log_v_ratio = np.log(v_last / v_first)
+    log_i_ratio = np.log(i_last / i_first)
+    
+    if log_i_ratio != 0:
+        return log_v_ratio / log_i_ratio
+    else:
+        return np.nan
 
 class AdvancedSuperconductorAnalyzer:
     """進階超導體數據分析器"""
@@ -101,39 +411,78 @@ class AdvancedSuperconductorAnalyzer:
         self._generate_data_summary()
         
     def _detect_and_handle_outliers(self):
-        """進階異常值檢測和處理"""
+        """進階異常值檢測和處理 - 使用 numba 優化"""
         print(f"\n🔍 Advanced outlier detection (threshold: {self.config['outlier_threshold']} IQR):")
         
         for col in [self.voltage_column, 'dV_dI', 'appl_current']:
             if col in self.data.columns:
-                Q1 = self.data[col].quantile(0.25)
-                Q3 = self.data[col].quantile(0.75)
-                IQR = Q3 - Q1
+                data_array = np.asarray(self.data[col].dropna(), dtype=np.float64)
                 
-                threshold = self.config['outlier_threshold']
-                outlier_mask = (self.data[col] < Q1 - threshold*IQR) | (self.data[col] > Q3 + threshold*IQR)
-                outlier_count = outlier_mask.sum()
-                
-                print(f"  {col}: {outlier_count} outliers ({outlier_count/len(self.data)*100:.2f}%)")
-                
-                # 統計信息
-                if outlier_count > 0:
-                    print(f"    Range: [{self.data[col].min():.6e}, {self.data[col].max():.6e}]")
-                    print(f"    Q1-Q3: [{Q1:.6e}, {Q3:.6e}]")
+                if len(data_array) > 0:
+                    if NUMBA_AVAILABLE:
+                        # 使用快速的numba函数检测异常值
+                        outlier_mask_array = fast_outlier_detection(data_array, self.config['outlier_threshold'])
+                        outlier_count = np.sum(outlier_mask_array)
+                        
+                        Q1 = fast_percentile(data_array, 25)
+                        Q3 = fast_percentile(data_array, 75)
+                    else:
+                        # 回退到pandas方法
+                        Q1 = self.data[col].quantile(0.25)
+                        Q3 = self.data[col].quantile(0.75)
+                        IQR = Q3 - Q1
+                        
+                        threshold = self.config['outlier_threshold']
+                        outlier_mask = (self.data[col] < Q1 - threshold*IQR) | (self.data[col] > Q3 + threshold*IQR)
+                        outlier_count = outlier_mask.sum()
+                    
+                    print(f"  {col}: {outlier_count} outliers ({outlier_count/len(data_array)*100:.2f}%)")
+                    
+                    # 統計信息
+                    if outlier_count > 0:
+                        print(f"    Range: [{data_array.min():.6e}, {data_array.max():.6e}]")
+                        print(f"    Q1-Q3: [{Q1:.6e}, {Q3:.6e}]")
     
     def _apply_data_smoothing(self):
-        """應用數據平滑"""
+        """應用數據平滑 - 使用 numba 優化"""
         window = self.config['smoothing_window']
         print(f"\n🔧 Applying data smoothing (window size: {window})")
         
-        for field in self.y_field_values[:5]:  # 示例：只對前5個field應用平滑
-            mask = self.data['y_field'] == field
-            field_data = self.data[mask].sort_values('appl_current')
+        # 并行处理数据平滑
+        with ThreadPoolExecutor(max_workers=get_optimal_threads()) as executor:
+            futures = []
             
-            if len(field_data) >= window:
-                # 對電壓數據應用滑動平均
-                smoothed_voltage = field_data[self.voltage_column].rolling(window=window, center=True).mean()
-                self.data.loc[mask, f'{self.voltage_column}_smoothed'] = smoothed_voltage.values
+            for field in self.y_field_values:
+                future = executor.submit(self._smooth_field_data, field, window)
+                futures.append((future, field))
+            
+            # 收集结果并应用到数据中
+            for future, field in futures:
+                try:
+                    smoothed_data = future.result()
+                    if smoothed_data is not None:
+                        mask = self.data['y_field'] == field
+                        if len(smoothed_data) == mask.sum():
+                            self.data.loc[mask, f'{self.voltage_column}_smoothed'] = smoothed_data
+                except Exception as e:
+                    print(f"⚠️ Error smoothing field {field}: {e}")
+    
+    def _smooth_field_data(self, field, window):
+        """平滑单个字段的数据"""
+        mask = self.data['y_field'] == field
+        field_data = self.data[mask].sort_values('appl_current')
+        
+        if len(field_data) >= window:
+            voltage_data = np.asarray(field_data[self.voltage_column], dtype=np.float64)
+            
+            if NUMBA_AVAILABLE:
+                # 使用快速的numba函数进行平滑
+                return fast_smooth_data(voltage_data, window)
+            else:
+                # 回退到pandas rolling
+                return field_data[self.voltage_column].rolling(window=window, center=True).mean().values
+        
+        return None
     
     def _generate_data_summary(self):
         """生成數據統計摘要"""
@@ -154,31 +503,60 @@ class AdvancedSuperconductorAnalyzer:
         print(f"  Points per field: {field_counts.mean():.1f} ± {field_counts.std():.1f}")
     
     def extract_enhanced_features(self):
-        """步驟2: 增強特徵提取"""
-        print("\n=== Step 2: Enhanced Feature Extraction ===")
+        """步驟2: 增強特徵提取 - 多线程优化版本"""
+        print("\n=== Step 2: Enhanced Feature Extraction (Multi-threaded) ===")
         
-        features_list = []
+        start_time = time.time()
+        max_workers = get_optimal_threads()
+        print(f"🚀 Using {max_workers} threads for parallel processing")
         
-        for i, y_field in enumerate(self.y_field_values):
-            if (i + 1) % 20 == 0 or i == 0:
-                print(f"🔄 Processed {i+1}/{len(self.y_field_values)} y_field values")
+        # 使用线程池并行处理特征提取
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_field = {
+                executor.submit(self._extract_comprehensive_features_for_field_safe, 
+                               y_field): y_field 
+                for y_field in self.y_field_values
+            }
             
-            field_data = self.data[self.data['y_field'] == y_field].sort_values('appl_current')
+            features_list = []
+            completed_count = 0
             
-            if len(field_data) == 0:
-                continue
-                
-            features = self._extract_comprehensive_features_for_field(field_data, y_field)
-            features_list.append(features)
+            # 收集结果
+            for future in as_completed(future_to_field):
+                y_field = future_to_field[future]
+                try:
+                    features = future.result()
+                    if features is not None:
+                        features_list.append(features)
+                    
+                    completed_count += 1
+                    if completed_count % 20 == 0 or completed_count == len(self.y_field_values):
+                        print(f"🔄 Processed {completed_count}/{len(self.y_field_values)} y_field values")
+                        
+                except Exception as exc:
+                    print(f"⚠️ Error processing y_field {y_field}: {exc}")
         
         # 合併所有特徵
         self.features = pd.DataFrame(features_list)
         
-        print(f"\n✅ Extracted features dimensions: {self.features.shape}")
-        print(f"📊 Total features: {len(self.features.columns)-1}")  # 減1是因為包含y_field列
+        elapsed_time = time.time() - start_time
+        print(f"\n✅ Feature extraction completed in {elapsed_time:.2f} seconds")
+        print(f"📊 Extracted features dimensions: {self.features.shape}")
+        print(f"📈 Total features: {len(self.features.columns)-1}")  # 減1是因為包含y_field列
+        print(f"⚡ Processing speed: {len(self.y_field_values)/elapsed_time:.1f} fields/second")
         
-        # 顯示特徵統計
+        # 显示特征统计
         self._display_feature_statistics()
+    
+    def _extract_comprehensive_features_for_field_safe(self, y_field):
+        """线程安全的特征提取函数"""
+        field_data = self.data[self.data['y_field'] == y_field].sort_values('appl_current')
+        
+        if len(field_data) == 0:
+            return None
+            
+        return self._extract_comprehensive_features_for_field(field_data, y_field)
     
     def _extract_comprehensive_features_for_field(self, field_data, y_field):
         """為特定y_field值提取全面特徵"""
@@ -335,41 +713,46 @@ class AdvancedSuperconductorAnalyzer:
         return features
     
     def _calculate_n_value(self, current, voltage):
-        """計算n值 - 改進版"""
+        """計算n值 - numba優化版"""
         try:
-            # 使用10%-90%準則
-            max_voltage = np.max(np.abs(voltage))
-            if max_voltage == 0:
-                return np.nan
-                
-            v10 = 0.1 * max_voltage
-            v90 = 0.9 * max_voltage
-            
-            # 找到對應的電流值
-            mask = (np.abs(voltage) >= v10) & (np.abs(voltage) <= v90)
-            if np.sum(mask) < 2:
-                return np.nan
-            
-            v_range = voltage[mask]
-            i_range = current[mask]
-            
-            # 過濾掉零電流值
-            non_zero_mask = i_range != 0
-            if np.sum(non_zero_mask) < 2:
-                return np.nan
-            
-            v_range = v_range[non_zero_mask]
-            i_range = i_range[non_zero_mask]
-            
-            # 計算 n = log(V90/V10) / log(I90/I10)
-            log_v_ratio = np.log(np.abs(v_range[-1]) / np.abs(v_range[0]))
-            log_i_ratio = np.log(np.abs(i_range[-1]) / np.abs(i_range[0]))
-            
-            if log_i_ratio != 0:
-                return log_v_ratio / log_i_ratio
+            if NUMBA_AVAILABLE and len(current) > 2 and len(voltage) > 2:
+                current_array = np.asarray(current, dtype=np.float64)
+                voltage_array = np.asarray(voltage, dtype=np.float64)
+                return fast_n_value_calculation(current_array, voltage_array)
             else:
-                return np.nan
+                # 回退到標準實現
+                max_voltage = np.max(np.abs(voltage))
+                if max_voltage == 0:
+                    return np.nan
+                    
+                v10 = 0.1 * max_voltage
+                v90 = 0.9 * max_voltage
                 
+                # 找到對應的電流值
+                mask = (np.abs(voltage) >= v10) & (np.abs(voltage) <= v90)
+                if np.sum(mask) < 2:
+                    return np.nan
+                
+                v_range = voltage[mask]
+                i_range = current[mask]
+                
+                # 過濾掉零電流值
+                non_zero_mask = i_range != 0
+                if np.sum(non_zero_mask) < 2:
+                    return np.nan
+                
+                v_range = v_range[non_zero_mask]
+                i_range = i_range[non_zero_mask]
+                
+                # 計算 n = log(V90/V10) / log(I90/I10)
+                log_v_ratio = np.log(np.abs(v_range[-1]) / np.abs(v_range[0]))
+                log_i_ratio = np.log(np.abs(i_range[-1]) / np.abs(i_range[0]))
+                
+                if log_i_ratio != 0:
+                    return log_v_ratio / log_i_ratio
+                else:
+                    return np.nan
+                    
         except Exception:
             return np.nan
     
@@ -392,26 +775,34 @@ class AdvancedSuperconductorAnalyzer:
             return np.nan
     
     def _calculate_skewness(self, data):
-        """計算偏度"""
-        if len(data) < 3:
-            return np.nan
-        mean_val = np.mean(data)
-        std_val = np.std(data, ddof=1)
-        if std_val == 0:
-            return np.nan
-        skew = np.mean(((data - mean_val) / std_val) ** 3)
-        return skew
+        """計算偏度 - 使用 numba 优化"""
+        if NUMBA_AVAILABLE:
+            return fast_skewness(np.asarray(data, dtype=np.float64))
+        else:
+            # 回退到标准实现
+            if len(data) < 3:
+                return np.nan
+            mean_val = np.mean(data)
+            std_val = np.std(data, ddof=1)
+            if std_val == 0:
+                return np.nan
+            skew = np.mean(((data - mean_val) / std_val) ** 3)
+            return skew
     
     def _calculate_kurtosis(self, data):
-        """計算峰度"""
-        if len(data) < 4:
-            return np.nan
-        mean_val = np.mean(data)
-        std_val = np.std(data, ddof=1)
-        if std_val == 0:
-            return np.nan
-        kurt = np.mean(((data - mean_val) / std_val) ** 4) - 3
-        return kurt
+        """計算峰度 - 使用 numba 优化"""
+        if NUMBA_AVAILABLE:
+            return fast_kurtosis(np.asarray(data, dtype=np.float64))
+        else:
+            # 回退到标准实现
+            if len(data) < 4:
+                return np.nan
+            mean_val = np.mean(data)
+            std_val = np.std(data, ddof=1)
+            if std_val == 0:
+                return np.nan
+            kurt = np.mean(((data - mean_val) / std_val) ** 4) - 3
+            return kurt
     
     def _display_feature_statistics(self):
         """顯示特徵統計"""
@@ -429,42 +820,61 @@ class AdvancedSuperconductorAnalyzer:
                     print(f"  {feature}: {mean_val:.6e} ± {std_val:.6e} ({len(valid_data)} valid)")
     
     def create_advanced_images(self):
-        """步驟3: 創建進階2D圖像"""
-        print("\n=== Step 3: Advanced 2D Image Generation ===")
+        """步驟3: 創建進階2D圖像 - 優化版本"""
+        print("\n=== Step 3: Advanced 2D Image Generation (Optimized) ===")
         
-        resolution = self.config['image_resolution']
+        start_time = time.time()
+        
+        # 使用動態網格大小優化
+        n_fields = len(self.y_field_values)
+        n_current_points = len(self.data['appl_current'].unique())
+        optimal_resolution = get_image_grid_size(n_fields, n_current_points)
         
         # 創建網格
-        y_grid = np.linspace(min(self.y_field_values), max(self.y_field_values), resolution[0])
+        y_grid = np.linspace(min(self.y_field_values), max(self.y_field_values), optimal_resolution[0])
         current_range = [self.data['appl_current'].min(), self.data['appl_current'].max()]
-        current_grid = np.linspace(current_range[0], current_range[1], resolution[1])
+        current_grid = np.linspace(current_range[0], current_range[1], optimal_resolution[1])
         
-        print(f"🎨 Creating images with resolution: {resolution}")
+        print(f"🎨 Creating images with optimal resolution: {optimal_resolution}")
         print(f"📏 y_field grid: {len(y_grid)} points")
         print(f"📏 Current grid: {len(current_grid)} points")
         
-        # 創建不同類型的圖像
+        # 並行處理不同類型的圖像
         image_types = [
             ('voltage', self.voltage_column),
             ('dV_dI', 'dV_dI'),
             ('resistance', 'computed')  # 計算的電阻圖像
         ]
         
-        for img_name, data_column in image_types:
-            if img_name == 'resistance':
-                # 計算電阻圖像
-                image = self._create_resistance_image(y_grid, current_grid)
-            else:
-                image = self._create_interpolated_image(y_grid, current_grid, data_column)
+        with ThreadPoolExecutor(max_workers=min(3, get_optimal_threads())) as executor:
+            future_to_image = {}
             
-            if image is not None:
-                self.images[img_name] = image
-                
-                # 應用進階圖像處理
-                processed_image = self._apply_advanced_image_processing(image)
-                self.images[f'{img_name}_enhanced'] = processed_image
+            for img_name, data_column in image_types:
+                if img_name == 'resistance':
+                    future = executor.submit(self._create_resistance_image, y_grid, current_grid)
+                else:
+                    future = executor.submit(self._create_interpolated_image, y_grid, current_grid, data_column)
+                future_to_image[future] = img_name
+            
+            # 收集結果
+            for future in as_completed(future_to_image):
+                img_name = future_to_image[future]
+                try:
+                    image = future.result()
+                    if image is not None:
+                        self.images[img_name] = image
+                        
+                        # 應用進階圖像處理
+                        processed_image = self._apply_advanced_image_processing(image)
+                        self.images[f'{img_name}_enhanced'] = processed_image
+                        
+                        print(f"✅ Generated {img_name} image")
+                except Exception as e:
+                    print(f"⚠️ Error creating {img_name} image: {e}")
         
-        print(f"✅ Generated {len(self.images)} images")
+        elapsed_time = time.time() - start_time
+        print(f"🎯 Image generation completed in {elapsed_time:.2f} seconds")
+        print(f"✅ Generated {len(self.images)} images total")
     
     def _create_interpolated_image(self, y_grid, current_grid, data_column):
         """創建插值圖像"""
@@ -687,8 +1097,10 @@ class AdvancedSuperconductorAnalyzer:
         
         plt.tight_layout()
         
-        # 保存圖片
-        output_filename = f"advanced_analysis_{self.data_path.replace('.csv', '')}.png"
+        # 保存圖片 - 修復檔名生成邏輯
+        import os
+        base_name = os.path.basename(self.data_path).replace('.csv', '')
+        output_filename = f"advanced_analysis_{base_name}.png"
         plt.savefig(output_filename, dpi=300, bbox_inches='tight')
         print(f"📊 Advanced visualization saved: {output_filename}")
         
@@ -774,10 +1186,11 @@ class AdvancedSuperconductorAnalyzer:
             # 過濾有效數據
             valid_data = self.features.dropna(subset=['Rn', 'y_field'])
             
-            # 為每個y_field計算Ic×Rn
+            # 為每個y_field計算Ic×Rn - 修復數據對應關係
             ic_rn_positive = []
             ic_rn_negative = []
-            y_field_values = []
+            y_pos = []  # 正向數據對應的磁場
+            y_neg = []  # 負向數據對應的磁場
             
             for _, row in valid_data.iterrows():
                 y_field = row['y_field']
@@ -787,38 +1200,38 @@ class AdvancedSuperconductorAnalyzer:
                 if 'Ic_positive' in row and not pd.isna(row['Ic_positive']):
                     ic_rn_pos = row['Ic_positive'] * rn * 1e6  # 轉換為 µV
                     ic_rn_positive.append(ic_rn_pos)
-                    y_field_values.append(y_field)
+                    y_pos.append(y_field)
                 
                 # 負向臨界電流 × Rn
                 if 'Ic_negative' in row and not pd.isna(row['Ic_negative']):
                     ic_rn_neg = row['Ic_negative'] * rn * 1e6  # 轉換為 µV
                     ic_rn_negative.append(ic_rn_neg)
-                    # 為負向添加相同的y_field值
-                    if 'Ic_positive' not in row or pd.isna(row['Ic_positive']):
-                        y_field_values.append(y_field)
+                    y_neg.append(y_field)
             
             if ic_rn_positive or ic_rn_negative:
                 # 繪製正向Ic×Rn
                 if ic_rn_positive:
-                    y_pos = y_field_values[:len(ic_rn_positive)]
-                    ax.scatter(ic_rn_positive, y_pos, alpha=0.7, s=40, 
+                    # 將磁場轉換為 mT (毫特斯拉) 以便更好地顯示
+                    y_pos_mT = [y * 1000 for y in y_pos]
+                    ax.scatter(y_pos_mT, ic_rn_positive, alpha=0.7, s=40, 
                              c='blue', label='Ic+ × Rn', marker='o')
                 
                 # 繪製負向Ic×Rn
                 if ic_rn_negative:
-                    y_neg = y_field_values[-len(ic_rn_negative):] if len(ic_rn_positive) > 0 else y_field_values
-                    ax.scatter(ic_rn_negative, y_neg, alpha=0.7, s=40, 
+                    # 將磁場轉換為 mT (毫特斯拉) 以便更好地顯示
+                    y_neg_mT = [y * 1000 for y in y_neg]
+                    ax.scatter(y_neg_mT, ic_rn_negative, alpha=0.7, s=40, 
                              c='red', label='Ic- × Rn', marker='^')
                 
-                ax.set_xlabel('Ic × Rn (µV)')
-                ax.set_ylabel('Magnetic Field (T)')
+                ax.set_xlabel('Magnetic Field (mT)')
+                ax.set_ylabel('Ic × Rn (µV)')
                 ax.set_title('Critical Current × Normal Resistance\nvs Magnetic Field')
                 ax.grid(True, alpha=0.3)
                 ax.legend(fontsize=8)
                 
                 # 添加趨勢線
                 all_ic_rn = ic_rn_positive + ic_rn_negative
-                all_y_field = y_field_values
+                all_y_field = y_pos + y_neg  # 合併磁場值
                 
                 if len(all_ic_rn) > 2:
                     try:
@@ -826,9 +1239,12 @@ class AdvancedSuperconductorAnalyzer:
                         sorted_data = sorted(zip(all_y_field, all_ic_rn))
                         y_sorted, ic_rn_sorted = zip(*sorted_data)
                         
-                        z = np.polyfit(ic_rn_sorted, y_sorted, 1)
+                        # 將磁場轉換為 mT
+                        y_sorted_mT = [y * 1000 for y in y_sorted]
+                        
+                        z = np.polyfit(y_sorted_mT, ic_rn_sorted, 1)
                         p = np.poly1d(z)
-                        x_trend = np.linspace(min(all_ic_rn), max(all_ic_rn), 100)
+                        x_trend = np.linspace(min(y_sorted_mT), max(y_sorted_mT), 100)
                         ax.plot(x_trend, p(x_trend), "g--", alpha=0.6, linewidth=1, label='Trend')
                         ax.legend(fontsize=8)
                     except Exception:
@@ -837,7 +1253,7 @@ class AdvancedSuperconductorAnalyzer:
                 # 顯示統計信息
                 if all_ic_rn:
                     mean_product = np.mean(all_ic_rn)
-                    ax.axvline(mean_product, color='orange', linestyle=':', alpha=0.7)
+                    ax.axhline(mean_product, color='orange', linestyle=':', alpha=0.7)
                     ax.text(0.02, 0.98, f'Mean: {mean_product:.1f} µV\nPoints: {len(all_ic_rn)}', 
                            transform=ax.transAxes, va='top', fontsize=8,
                            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
@@ -1034,6 +1450,139 @@ class AdvancedSuperconductorAnalyzer:
                    ha='center', va='center', transform=ax.transAxes)
             ax.set_title('Data Quality Analysis')
     
+    def export_ic_data(self):
+        """導出每個數據集的 y_field 和 Ic 值到 CSV 檔案
+        根據臨界電流數據的可用性決定輸出檔案：
+        - 只有正向：{dataid}Ic.csv
+        - 只有負向：{dataid}Ic-.csv  
+        - 兩者都有：{dataid}Ic+.csv 和 {dataid}Ic-.csv
+        檔案將保存到 "Ic" 資料夾中
+        """
+        print("\n=== Exporting Ic Data ===")
+        
+        # 獲取數據集ID (從檔案路徑中提取)
+        import os
+        base_name = os.path.basename(self.data_path).replace('.csv', '')
+        
+        # 創建 Ic 資料夾（如果不存在）
+        output_dir = "Ic"
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            print(f"📁 Created output directory: {output_dir}")
+        
+        # 檢查可用的臨界電流類型
+        has_positive = 'Ic_positive' in self.features.columns
+        has_negative = 'Ic_negative' in self.features.columns
+        
+        # 計算每種類型的有效數據點數量
+        valid_positive = 0
+        valid_negative = 0
+        
+        if has_positive:
+            valid_positive = (~np.isnan(self.features['Ic_positive'])).sum()
+        if has_negative:
+            valid_negative = (~np.isnan(self.features['Ic_negative'])).sum()
+        
+        print(f"🔍 Data availability check:")
+        print(f"   Positive Ic: {valid_positive} valid points")
+        print(f"   Negative Ic: {valid_negative} valid points")
+        
+        exported_files = []
+        
+        # 情況1：只有正向臨界電流
+        if valid_positive > 0 and valid_negative == 0:
+            print("📤 Exporting positive critical current only...")
+            export_data = []
+            for _, row in self.features.iterrows():
+                if not np.isnan(row['Ic_positive']):
+                    export_data.append({
+                        'y_field': row['y_field'],
+                        'Ic': row['Ic_positive']
+                    })
+            
+            if export_data:
+                export_df = pd.DataFrame(export_data).sort_values('y_field')
+                output_filename = os.path.join(output_dir, f"{base_name}Ic.csv")
+                export_df.to_csv(output_filename, index=False)
+                exported_files.append(output_filename)
+                
+                print(f"✅ Positive Ic data exported to: {output_filename}")
+                print(f"📊 Exported {len(export_df)} data points")
+                print(f"🎯 y_field range: {export_df['y_field'].min():.6f} - {export_df['y_field'].max():.6f}")
+                print(f"⚡ Ic range: {export_df['Ic'].min():.6e} - {export_df['Ic'].max():.6e} A")
+    
+        # 情況2：只有負向臨界電流
+        elif valid_positive == 0 and valid_negative > 0:
+            print("📤 Exporting negative critical current only...")
+            export_data = []
+            for _, row in self.features.iterrows():
+                if not np.isnan(row['Ic_negative']):
+                    export_data.append({
+                        'y_field': row['y_field'],
+                        'Ic': abs(row['Ic_negative'])  # 使用絕對值
+                    })
+            
+            if export_data:
+                export_df = pd.DataFrame(export_data).sort_values('y_field')
+                output_filename = os.path.join(output_dir, f"{base_name}Ic-.csv")
+                export_df.to_csv(output_filename, index=False)
+                exported_files.append(output_filename)
+                
+                print(f"✅ Negative Ic data exported to: {output_filename}")
+                print(f"📊 Exported {len(export_df)} data points")
+                print(f"🎯 y_field range: {export_df['y_field'].min():.6f} - {export_df['y_field'].max():.6f}")
+                print(f"⚡ Ic range: {export_df['Ic'].min():.6e} - {export_df['Ic'].max():.6e} A")
+    
+        # 情況3：同時有正向和負向臨界電流
+        elif valid_positive > 0 and valid_negative > 0:
+            print("📤 Exporting both positive and negative critical currents...")
+            
+            # 導出正向臨界電流
+            positive_data = []
+            for _, row in self.features.iterrows():
+                if not np.isnan(row['Ic_positive']):
+                    positive_data.append({
+                        'y_field': row['y_field'],
+                        'Ic': row['Ic_positive']
+                    })
+            
+            if positive_data:
+                positive_df = pd.DataFrame(positive_data).sort_values('y_field')
+                positive_filename = os.path.join(output_dir, f"{base_name}Ic+.csv")
+                positive_df.to_csv(positive_filename, index=False)
+                exported_files.append(positive_filename)
+                
+                print(f"✅ Positive Ic data exported to: {positive_filename}")
+                print(f"📊 Exported {len(positive_df)} positive data points")
+                print(f"🎯 y_field range: {positive_df['y_field'].min():.6f} - {positive_df['y_field'].max():.6f}")
+                print(f"⚡ Ic+ range: {positive_df['Ic'].min():.6e} - {positive_df['Ic'].max():.6e} A")
+            
+            # 導出負向臨界電流
+            negative_data = []
+            for _, row in self.features.iterrows():
+                if not np.isnan(row['Ic_negative']):
+                    negative_data.append({
+                        'y_field': row['y_field'],
+                        'Ic': abs(row['Ic_negative'])  # 使用絕對值
+                    })
+            
+            if negative_data:
+                negative_df = pd.DataFrame(negative_data).sort_values('y_field')
+                negative_filename = os.path.join(output_dir, f"{base_name}Ic-.csv")
+                negative_df.to_csv(negative_filename, index=False)
+                exported_files.append(negative_filename)
+                
+                print(f"✅ Negative Ic data exported to: {negative_filename}")
+                print(f"📊 Exported {len(negative_df)} negative data points")
+                print(f"🎯 y_field range: {negative_df['y_field'].min():.6f} - {negative_df['y_field'].max():.6f}")
+                print(f"⚡ Ic- range: {negative_df['Ic'].min():.6e} - {negative_df['Ic'].max():.6e} A")
+    
+        else:
+            print("⚠️  No critical current data available for export")
+            return None
+        
+        return exported_files if exported_files else None
+    
     def generate_comprehensive_report(self):
         """生成綜合報告"""
         print("\n" + "="*80)
@@ -1141,15 +1690,21 @@ class AdvancedSuperconductorAnalyzer:
             # 步驟6: 報告生成
             self.generate_comprehensive_report()
             
+            # 步驟7: 導出 Ic 數據
+            ic_csv_file = self.export_ic_data()
+            
             print("\n✅ Analysis completed successfully!")
             print(f"📊 Results saved as: {output_file}")
+            if ic_csv_file:
+                print(f"📄 Ic data exported as: {ic_csv_file}")
             
             return {
                 'features': self.features,
                 'images': self.images,
                 'ml_features': self.ml_features,
                 'clustering': self.clustering_results,
-                'output_file': output_file
+                'output_file': output_file,
+                'ic_csv_file': ic_csv_file
             }
             
         except Exception as e:
@@ -1171,8 +1726,30 @@ def main():
         'image_resolution': (150, 200)
     }
     
-    # 分析不同數據集
-    datasets = ['317.csv', '500.csv']  # 可以根據需要修改
+    # 自動掃描 csv 資料夾中的所有 .csv 檔案
+    import os
+    import glob
+    
+    csv_folder = 'csv'
+    if os.path.exists(csv_folder):
+        # 尋找所有 .csv 檔案
+        csv_files = glob.glob(os.path.join(csv_folder, '*.csv'))
+        datasets = [os.path.basename(f) for f in csv_files]
+        datasets.sort()  # 按檔名排序
+        
+        print(f"🔍 發現 {len(datasets)} 個 CSV 檔案:")
+        for i, dataset in enumerate(datasets, 1):
+            print(f"  {i}. {dataset}")
+    else:
+        # 備用方案 - 如果 csv 資料夾不存在
+        datasets = ['164.csv', '317.csv', '335.csv', '396.csv', '397.csv', '500.csv']
+        print("⚠️  使用預設資料集清單")
+    
+    print(f"\n🚀 開始分析 {len(datasets)} 個資料集...")
+    
+    # 統計結果
+    successful_analyses = []
+    failed_analyses = []
     
     for dataset in datasets:
         try:
@@ -1181,20 +1758,49 @@ def main():
             print(f"{'='*60}")
             
             # 創建分析器
-            analyzer = AdvancedSuperconductorAnalyzer(dataset, config)
+            dataset_path = os.path.join(csv_folder, dataset) if os.path.exists(csv_folder) else dataset
+            analyzer = AdvancedSuperconductorAnalyzer(dataset_path, config)
             
             # 執行分析
             results = analyzer.run_complete_analysis()
             
             if results:
+                successful_analyses.append(dataset)
                 print(f"✅ Successfully analyzed {dataset}")
             else:
+                failed_analyses.append(dataset)
                 print(f"❌ Failed to analyze {dataset}")
                 
         except FileNotFoundError:
+            failed_analyses.append(dataset)
             print(f"⚠️  Dataset {dataset} not found, skipping...")
         except Exception as e:
+            failed_analyses.append(dataset)
             print(f"❌ Error analyzing {dataset}: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # 輸出最終統計報告
+    print(f"\n{'='*80}")
+    print("                    🎯 BATCH ANALYSIS SUMMARY")
+    print(f"{'='*80}")
+    print(f"📊 Total datasets: {len(datasets)}")
+    print(f"✅ Successful analyses: {len(successful_analyses)}")
+    print(f"❌ Failed analyses: {len(failed_analyses)}")
+    
+    if successful_analyses:
+        print(f"\n🎉 Successfully analyzed:")
+        for dataset in successful_analyses:
+            print(f"  ✓ {dataset}")
+    
+    if failed_analyses:
+        print(f"\n⚠️  Failed to analyze:")
+        for dataset in failed_analyses:
+            print(f"  ✗ {dataset}")
+    
+    success_rate = len(successful_analyses) / len(datasets) * 100 if datasets else 0
+    print(f"\n📈 Success rate: {success_rate:.1f}%")
+    print(f"{'='*80}")
 
 if __name__ == '__main__':
     main()
