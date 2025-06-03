@@ -1362,24 +1362,18 @@ class AdvancedSuperconductorAnalyzer:
         try:
             if 'transition_width' in self.features.columns:
                 # 繪製轉變寬度隨 y_field 的變化
-                valid_mask = self.features['transition_width'].notna()
-                tw_data = self.features.loc[valid_mask, 'transition_width'] * 1e6  # Convert to µA
-                y_fields = self.features.loc[valid_mask, 'y_field']
+                tw_data = self.features['transition_width'].dropna() * 1e6  # Convert to µA
+                y_fields = self.features.loc[tw_data.index, 'y_field']
                 
-                # 按照 y_field 排序以確保正確的連線順序
-                sort_indices = np.argsort(y_fields)
-                y_fields_sorted = y_fields.iloc[sort_indices]
-                tw_data_sorted = tw_data.iloc[sort_indices]
-                
-                ax.plot(y_fields_sorted, tw_data_sorted, 'g-o', markersize=3, linewidth=1.5, alpha=0.8)
+                ax.plot(y_fields, tw_data, 'g-o', markersize=3, linewidth=1.5, alpha=0.8)
                 ax.set_xlabel('y_field')
                 ax.set_ylabel('Transition Width (µA)')
                 ax.set_title('Superconducting Transition Width')
                 ax.grid(True, alpha=0.3)
                 
                 # 添加統計信息
-                mean_tw = tw_data_sorted.mean()
-                std_tw = tw_data_sorted.std()
+                mean_tw = tw_data.mean()
+                std_tw = tw_data.std()
                 ax.text(0.05, 0.95, f'Mean: {mean_tw:.2f} µA\nStd: {std_tw:.2f} µA', 
                        transform=ax.transAxes, verticalalignment='top', 
                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
