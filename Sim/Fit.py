@@ -462,7 +462,7 @@ Offset: {result['offset']:.6f}
             'SNR_Detrended_dB': [stats.snr_detrended_db],
             'Detected_Amplitude': [result['amplitude']],
             'Detected_Phase': [result['phase']]
-        }
+        };
         
         summary_df = pd.DataFrame(summary_data)
         summary_filename = f'snr_analysis_summary_{model_type}.csv'
@@ -613,8 +613,10 @@ Signal-to-Noise Ratio:
         
         print(f"\n🚀 Fitting Complete Josephson Equation for {data['model_name']}")
         print("="*70)
-        print(f"   Using Lomb-Scargle results as initial parameters")
-        print(f"   Method: {'L-BFGS-B' if use_lbfgsb else 'default lmfit'}")
+        print(f"   ✅ Using ORIGINAL data (NOT detrended) for complete Josephson fitting")
+        print(f"   📊 Using Lomb-Scargle frequency detection as initial parameter guide")
+        print(f"   🔧 Method: {'L-BFGS-B' if use_lbfgsb else 'default lmfit'}")
+        print(f"   📝 Complete Josephson equation includes all physical terms (C, r, T, etc.)")
         
         # Create Josephson fitter
         fitter = JosephsonFitter()
@@ -668,7 +670,7 @@ Signal-to-Noise Ratio:
         
         # Store fitter object for future use
         if not hasattr(self, 'josephson_fitters'):
-            self.josephson_fitters = {}
+            self.josephson_fixtters = {}
         self.josephson_fitters[model_type] = fitter
         
         return fitter
@@ -737,33 +739,32 @@ Signal-to-Noise Ratio:
         ax3 = axes[1, 0]
         fitted_params = fitter.get_fitted_parameters()
         
-        if fitted_params is not None:
-            # Compare frequencies and amplitudes
-            ls_freq = ls_result['best_frequency']
-            ls_amp = ls_result['amplitude']
-            josephson_freq = fitted_params['f']['value']
-            josephson_amp = fitted_params['I_c']['value']
-            
-            param_comparison = {
-                'Frequency': [ls_freq, josephson_freq],
-                'Amplitude/I_c': [ls_amp, josephson_amp]
-            }
-            
-            x_pos = np.arange(len(param_comparison))
-            width = 0.35
-            
-            ls_values = [param_comparison['Frequency'][0], param_comparison['Amplitude/I_c'][0]]
-            josephson_values = [param_comparison['Frequency'][1], param_comparison['Amplitude/I_c'][1]]
-            
-            ax3.bar(x_pos - width/2, ls_values, width, label='Lomb-Scargle', alpha=0.8)
-            ax3.bar(x_pos + width/2, josephson_values, width, label='Complete Josephson', alpha=0.8)
-            ax3.set_xlabel('Parameters')
-            ax3.set_ylabel('Values')
-            ax3.set_title('Key Parameter Comparison')
-            ax3.set_xticks(x_pos)
-            ax3.set_xticklabels(list(param_comparison.keys()))
-            ax3.legend()
-            ax3.grid(True, alpha=0.3)
+        # Compare frequencies and amplitudes
+        ls_freq = ls_result['best_frequency']
+        ls_amp = ls_result['amplitude']
+        josephson_freq = fitted_params['f']['value']
+        josephson_amp = fitted_params['I_c']['value']
+        
+        param_comparison = {
+            'Frequency': [ls_freq, josephson_freq],
+            'Amplitude/I_c': [ls_amp, josephson_amp]
+        }
+        
+        x_pos = np.arange(len(param_comparison))
+        width = 0.35
+        
+        ls_values = [param_comparison['Frequency'][0], param_comparison['Amplitude/I_c'][0]]
+        josephson_values = [param_comparison['Frequency'][1], param_comparison['Amplitude/I_c'][1]]
+        
+        ax3.bar(x_pos - width/2, ls_values, width, label='Lomb-Scargle', alpha=0.8)
+        ax3.bar(x_pos + width/2, josephson_values, width, label='Complete Josephson', alpha=0.8)
+        ax3.set_xlabel('Parameters')
+        ax3.set_ylabel('Values')
+        ax3.set_title('Key Parameter Comparison')
+        ax3.set_xticks(x_pos)
+        ax3.set_xticklabels(list(param_comparison.keys()))
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
         
         # 4. Statistical comparison
         ax4 = axes[1, 1]
@@ -774,7 +775,7 @@ Signal-to-Noise Ratio:
         josephson_stats = ModelStatistics(
             y_true=I_s,
             y_pred=josephson_fit,
-            n_params=len(fitted_params) if fitted_params else 7,
+            n_params=len(fitted_params),
             model_name="Complete Josephson"
         )
         
@@ -802,10 +803,7 @@ Improvement:
   ΔR²: {josephson_stats.r_squared - ls_stats.r_squared:.6f}
   ΔRMSE: {ls_stats.rmse - josephson_stats.rmse:.6e}
   ΔSNR (dB): {josephson_stats.snr_db - ls_stats.snr_db:.1f}
-"""
-        
-        if fitted_params is not None:
-            stats_text += f"""
+
 Josephson Parameters:
   I_c = {fitted_params['I_c']['value']:.6f} ± {fitted_params['I_c']['stderr']:.6f}
   f = {fitted_params['f']['value']:.6f} ± {fitted_params['f']['stderr']:.6f}
@@ -827,161 +825,6 @@ Josephson Parameters:
         plt.show()
         
         return josephson_stats
-
-
-def analyze_with_lomb_scargle_standalone(times, values, errors=None, true_frequency=None, 
-                                       detrend_order=1, model_name="Unknown"):
-    """
-    獨立的 Lomb-Scargle 分析函數
-    
-    Args:
-        times: 時間序列（或外部磁通）
-        values: 測量值（或超導電流）
-        errors: 測量誤差（可選）
-        true_frequency: 真實頻率（用於比較，可選）
-        detrend_order: 去趨勢多項式階數
-        model_name: 模型名稱
-        
-    Returns:
-        分析結果字典
-    """
-    times = np.array(times)
-    values = np.array(values)
-    
-    if errors is None:
-        errors = np.zeros_like(values)
-    else:
-        errors = np.array(errors)
-    
-    print(f"\n🔬 Start Lomb-Scargle Analysis - {model_name}")
-    
-    # Detrending
-    detrended_values = values.copy()
-    trend_coeffs = None
-    if detrend_order > 0:
-        trend_coeffs = np.polyfit(times, values, detrend_order)
-        trend = np.polyval(trend_coeffs, times)
-        detrended_values = values - trend
-        print(f"✅ Applied {detrend_order}-order polynomial detrending")
-    
-    # Lomb-Scargle analysis
-    ls = LombScargle(times, detrended_values, dy=errors, 
-                    fit_mean=True, center_data=True)
-    
-    # Automatically determine frequency range
-    time_span = times.max() - times.min()
-    min_freq = 0.01 / time_span  # Much lower minimum frequency
-    median_dt = np.median(np.diff(np.sort(times)))
-    max_freq = 1.0 / median_dt  # More conservative maximum frequency
-    
-    # Calculate periodogram with higher resolution
-    frequency, power = ls.autopower(minimum_frequency=min_freq,
-                                  maximum_frequency=max_freq,
-                                  samples_per_peak=50)  # Much higher resolution
-    
-    # 找到最佳頻率
-    best_idx = np.argmax(power)
-    best_frequency = frequency[best_idx]
-    best_period = 1.0 / best_frequency
-    best_power = power[best_idx]
-    
-    # 計算模型參數
-    model_params = ls.model_parameters(best_frequency)
-    amplitude = np.sqrt(model_params[0]**2 + model_params[1]**2)
-    phase = np.arctan2(model_params[1], model_params[0])
-    offset = ls.offset()
-    
-    # 計算擬合值
-    ls_model_detrended = ls.model(times, best_frequency)
-    if trend_coeffs is not None:
-        ls_model_original = ls_model_detrended + np.polyval(trend_coeffs, times)
-    else:
-        ls_model_original = ls_model_detrended
-    
-    # 統計評估
-    stats = ModelStatistics(
-        y_true=values,
-        y_pred=ls_model_original,
-        n_params=3,  # 頻率、振幅、相位
-        model_name=f"LS-{model_name}"
-    )
-    
-    # 組織結果
-    analysis_result = {
-        'frequency': frequency,
-        'power': power,
-        'best_frequency': best_frequency,
-        'best_period': best_period,
-        'best_power': best_power,
-        'amplitude': amplitude,
-        'phase': phase,
-        'offset': offset,
-        'ls_model': ls_model_original,
-        'statistics': stats,
-        'ls_object': ls
-    }
-    
-    if true_frequency is not None:
-        analysis_result['true_frequency'] = true_frequency
-        frequency_error = abs(best_frequency - true_frequency)
-        relative_error = frequency_error / true_frequency * 100
-        analysis_result['frequency_error'] = frequency_error
-        analysis_result['relative_error'] = relative_error
-    
-    # Print results
-    print(f"\n📊 Lomb-Scargle Analysis Results:")
-    if true_frequency is not None:
-        print(f"   True Frequency: {true_frequency:.6e}")
-        print(f"   Detected Frequency: {best_frequency:.6e}")
-        print(f"   Frequency Error: {frequency_error:.6e}")
-        print(f"   Relative Error: {relative_error:.2f}%")
-    else:
-        print(f"   Detected Frequency: {best_frequency:.6e}")
-    print(f"   Best Period: {best_period:.6e}")
-    print(f"   Detected Amplitude: {amplitude:.6e}")
-    print(f"   R²: {stats.r_squared:.6f}")
-    print(f"   SNR (Power): {stats.snr_power:.2f} ({stats.snr_db:.2f} dB)")
-    print(f"   SNR (RMS): {stats.snr_rms:.2f} ({stats.snr_rms_db:.2f} dB)")
-    print(f"   SNR (Peak): {stats.snr_peak:.2f} ({stats.snr_peak_db:.2f} dB)")
-
-    return analysis_result
-
-
-def complete_josephson_equation(phi_ext, I_c, f, d, phi_0, T, r, C):
-    """
-    Complete Josephson junction equation with finite transmission
-    
-    Args:
-        phi_ext: External flux (independent variable)
-        I_c: Critical current
-        f: Frequency
-        d: Phase offset
-        phi_0: Initial phase
-        T: Transmission coefficient (0 < T < 1)
-        r: Linear trend slope
-        C: Constant offset
-        
-    Returns:
-        Current I_s calculated from the complete Josephson equation
-    """
-    # Calculate the phase
-    phase = 2 * np.pi * f * (phi_ext - d) - phi_0
-    
-    # Avoid numerical issues with square root
-    sin_half_phase = np.sin(phase / 2)
-    denominator = np.sqrt(1 - T * sin_half_phase**2)
-    
-    # Main Josephson term
-    josephson_term = I_c * np.sin(phase) / denominator
-    
-    # Linear background term
-    linear_term = r * (phi_ext - d)
-    
-    # Total current
-    I_s = josephson_term + linear_term + C
-    
-    return I_s
-
 
 class JosephsonFitter:
     """
@@ -1042,10 +885,16 @@ class JosephsonFitter:
         trend_coeffs = np.polyfit(phi_ext, I_s, 1)
         initial_r = trend_coeffs[0]
         
+        # CRITICAL FIX: Set d to center of phi_ext to minimize linear term offset
+        initial_d = np.mean(phi_ext)  # Center the data to minimize linear contribution
+        
+        print(f"   Initial d: {initial_d:.6e} (center of phi_ext data)")
+        print(f"   Initial r: {initial_r:.6e} (linear trend from data)")
+        
         # Set parameters with bounds
         params.add('I_c', value=initial_I_c, min=0.1 * abs(initial_I_c), max=10 * abs(initial_I_c))
         params.add('f', value=initial_f, min=0.01 * initial_f, max=100 * initial_f)
-        params.add('d', value=0.0, min=-10, max=10)
+        params.add('d', value=initial_d, min=initial_d - abs(initial_d), max=initial_d + abs(initial_d))
         params.add('phi_0', value=initial_phi_0, min=-2*np.pi, max=2*np.pi)
         params.add('T', value=0.5, min=0.01, max=0.99)  # Transmission coefficient
         params.add('r', value=initial_r, min=-10*abs(initial_r), max=10*abs(initial_r))
@@ -1291,242 +1140,520 @@ C = {fitted_params['C']['value']:.6f} ± {fitted_params['C']['stderr']:.6f}
         
         return filename, param_filename
     
-    def fit_complete_josephson_equation(self, model_type, use_lbfgsb=True, save_results=True):
+    def fit_josephson_relation(self, phi_ext, I_s, I_s_error=None, lomb_scargle_result=None):
         """
-        Fit complete Josephson equation using lmfit + L-BFGS-B with Lomb-Scargle initial parameters
+        Wrapper method for backward compatibility - calls fit() method
         
         Args:
-            model_type: Model type to fit
-            use_lbfgsb: Whether to use L-BFGS-B method (default: True)
-            save_results: Whether to save results to CSV files
+            phi_ext: External flux data
+            I_s: Current data
+            I_s_error: Current measurement errors (optional)
+            lomb_scargle_result: Results from Lomb-Scargle analysis
             
         Returns:
-            JosephsonFitter object with fit results
+            Tuple of (fitted_parameters_dict, fit_result)
         """
-        if model_type not in self.analysis_results:
-            print(f"❌ No Lomb-Scargle analysis results found for {model_type}")
-            print("   Please run analyze_with_lomb_scargle() first to generate initial parameters")
-            return None
+        result = self.fit(phi_ext, I_s, I_s_error, lomb_scargle_result)
         
-        if model_type not in self.simulation_results:
-            print(f"❌ No simulation data found for {model_type}")
-            return None
+        if result is None:
+            return None, None
         
-        # Get data and Lomb-Scargle results
-        data = self.simulation_results[model_type]
-        ls_result = self.analysis_results[model_type]
+        # Return fitted parameters as dict for compatibility
+        fitted_params = self.get_fitted_parameters()
         
-        phi_ext = data['Phi_ext']
-        I_s = data['I_s']
-        I_s_error = data.get('I_s_error', None)
-        
-        print(f"\n🚀 Fitting Complete Josephson Equation for {data['model_name']}")
-        print("="*70)
-        print(f"   Using Lomb-Scargle results as initial parameters")
-        print(f"   Method: {'L-BFGS-B' if use_lbfgsb else 'default lmfit'}")
-        
-        # Create Josephson fitter
-        fitter = JosephsonFitter()
-        
-        # Perform the fit
-        method = 'lbfgsb' if use_lbfgsb else 'leastsq'
-        fit_result = fitter.fit(
-            phi_ext=phi_ext,
-            I_s=I_s,
-            I_s_error=I_s_error,
-            lomb_scargle_result=ls_result,
-            method=method
-        )
-        
-        if fit_result is None:
-            print("❌ Fitting failed")
-            return None
-        
-        # Print fit results
-        fitted_params = fitter.get_fitted_parameters()
-        print(f"\n📊 Complete Josephson Equation Fit Results:")
-        print("-"*50)
-        for param_name, param_info in fitted_params.items():
-            initial_val = param_info['initial']
-            fitted_val = param_info['value']
-            stderr = param_info['stderr']
-            
-            print(f"   {param_name}:")
-            print(f"      Initial:  {initial_val:.6f}")
-            print(f"      Fitted:   {fitted_val:.6f} ± {stderr:.6f}")
-            if param_name == 'f' and 'f' in data['parameters']:
-                true_val = data['parameters']['f']
-                error = abs(fitted_val - true_val)
-                rel_error = error / true_val * 100
-                print(f"      True:     {true_val:.6f}")
-                print(f"      Error:    {error:.6f} ({rel_error:.2f}%)")
-        
-        # Generate plots
-        print(f"\n📈 Generating complete Josephson fit plots...")
-        stats = fitter.plot_fit_results(phi_ext, I_s, save_plot=True, 
-                                       filename_suffix=f"_{model_type}")
-        
-        # Save results if requested
-        if save_results:
-            print(f"\n💾 Saving complete Josephson fit results...")
-            data_file, param_file = fitter.save_fit_results_to_csv(
-                phi_ext, I_s, filename_suffix=f"_{model_type}")
-        
-        # Store fitter object for future use
-        if not hasattr(self, 'josephson_fitters'):
-            self.josephson_fitters = {}
-        self.josephson_fitters[model_type] = fitter
-        
-        return fitter
+        return fitted_params, result
+
+def analyze_with_lomb_scargle_standalone(times, values, errors=None, true_frequency=None, 
+                                       detrend_order=1, model_name="Unknown"):
+    """
+    獨立的 Lomb-Scargle 分析函數
     
-    def compare_lomb_scargle_vs_josephson_fit(self, model_type, save_plot=True):
+    Args:
+        times: 時間序列（或外部磁通）
+        values: 測量值（或超導電流）
+        errors: 測量誤差（可選）
+        true_frequency: 真實頻率（用於比較，可選）
+        detrend_order: 去趨勢多項式階數
+        model_name: 模型名稱
+        
+    Returns:
+        分析結果字典
+    """
+    times = np.array(times)
+    values = np.array(values)
+    
+    if errors is None:
+        errors = np.zeros_like(values)
+    else:
+        errors = np.array(errors)
+    
+    print(f"\n🔬 Start Lomb-Scargle Analysis - {model_name}")
+    
+    # Detrending
+    detrended_values = values.copy()
+    trend_coeffs = None
+    if detrend_order > 0:
+        trend_coeffs = np.polyfit(times, values, detrend_order)
+        trend = np.polyval(trend_coeffs, times)
+        detrended_values = values - trend
+        print(f"✅ Applied {detrend_order}-order polynomial detrending")
+    
+    # Lomb-Scargle analysis
+    ls = LombScargle(times, detrended_values, dy=errors, 
+                    fit_mean=True, center_data=True)
+    
+    # Automatically determine frequency range
+    time_span = times.max() - times.min()
+    min_freq = 0.01 / time_span  # Much lower minimum frequency
+    median_dt = np.median(np.diff(np.sort(times)))
+    max_freq = 1.0 / median_dt  # More conservative maximum frequency
+    
+    # Calculate periodogram with higher resolution
+    frequency, power = ls.autopower(minimum_frequency=min_freq,
+                                  maximum_frequency=max_freq,
+                                  samples_per_peak=50)  # Much higher resolution
+    
+    # 找到最佳頻率
+    best_idx = np.argmax(power)
+    best_frequency = frequency[best_idx]
+    best_period = 1.0 / best_frequency
+    best_power = power[best_idx]
+    
+    # 計算模型參數
+    model_params = ls.model_parameters(best_frequency)
+    amplitude = np.sqrt(model_params[0]**2 + model_params[1]**2)
+    phase = np.arctan2(model_params[1], model_params[0])
+    offset = ls.offset()
+    
+    # 計算擬合值
+    ls_model_detrended = ls.model(times, best_frequency)
+    if trend_coeffs is not None:
+        ls_model_original = ls_model_detrended + np.polyval(trend_coeffs, times)
+    else:
+        ls_model_original = ls_model_detrended
+    
+    # 統計評估
+    stats = ModelStatistics(
+        y_true=values,
+        y_pred=ls_model_original,
+        n_params=3,  # 頻率、振幅、相位
+        model_name=f"LS-{model_name}"
+    )
+    
+    # 組織結果
+    analysis_result = {
+        'frequency': frequency,
+        'power': power,
+        'best_frequency': best_frequency,
+        'best_period': best_period,
+        'best_power': best_power,
+        'amplitude': amplitude,
+        'phase': phase,
+        'offset': offset,
+        'ls_model': ls_model_original,
+        'statistics': stats,
+        'ls_object': ls
+    }
+    
+    if true_frequency is not None:
+        analysis_result['true_frequency'] = true_frequency
+        frequency_error = abs(best_frequency - true_frequency)
+        relative_error = frequency_error / true_frequency * 100
+        analysis_result['frequency_error'] = frequency_error
+        analysis_result['relative_error'] = relative_error
+    
+    # Print results
+    print(f"\n📊 Lomb-Scargle Analysis Results:")
+    if true_frequency is not None:
+        print(f"   True Frequency: {true_frequency:.6e}")
+        print(f"   Detected Frequency: {best_frequency:.6e}")
+        print(f"   Frequency Error: {frequency_error:.6e}")
+        print(f"   Relative Error: {relative_error:.2f}%")
+    else:
+        print(f"   Detected Frequency: {best_frequency:.6e}")
+    print(f"   Best Period: {best_period:.6e}")
+    print(f"   Detected Amplitude: {amplitude:.6e}")
+    print(f"   R²: {stats.r_squared:.6f}")
+    print(f"   SNR (Power): {stats.snr_power:.2f} ({stats.snr_db:.2f} dB)")
+    print(f"   SNR (RMS): {stats.snr_rms:.2f} ({stats.snr_rms_db:.2f} dB)")
+    print(f"   SNR (Peak): {stats.snr_peak:.2f} ({stats.snr_peak_db:.2f} dB)")
+
+    return analysis_result
+
+
+def complete_josephson_equation(phi_ext, I_c, f, d, phi_0, T, r, C):
+    """
+    Complete Josephson junction equation with finite transmission
+    
+    Args:
+        phi_ext: External flux (independent variable)
+        I_c: Critical current
+        f: Frequency
+        d: Phase offset
+        phi_0: Initial phase
+        T: Transmission coefficient (0 < T < 1)
+        r: Linear trend slope
+        C: Constant offset
+        
+    Returns:
+        Current I_s calculated from the complete Josephson equation
+    """
+    # Calculate the phase
+    phase = 2 * np.pi * f * (phi_ext - d) - phi_0
+    
+    # Avoid numerical issues with square root
+    sin_half_phase = np.sin(phase / 2)
+    denominator = np.sqrt(1 - T * sin_half_phase**2)
+    
+    # Main Josephson term
+    josephson_term = I_c * np.sin(phase) / denominator
+    
+    # Linear background term
+    linear_term = r * (phi_ext - d)
+    
+    # Total current
+    I_s = josephson_term + linear_term + C
+    
+    return I_s
+
+
+class JosephsonFitter:
+    """
+    Complete Josephson equation fitter using lmfit + L-BFGS-B
+    """
+    
+    def __init__(self):
+        """Initialize the fitter"""
+        self.model = None
+        self.result = None
+        self.initial_params = None
+        
+    def create_model(self):
+        """Create the lmfit Model for complete Josephson equation"""
+        self.model = Model(complete_josephson_equation)
+        return self.model
+    
+    def estimate_initial_parameters(self, phi_ext, I_s, lomb_scargle_result=None):
         """
-        Compare Lomb-Scargle analysis results with complete Josephson equation fit
+        Estimate initial parameters using Lomb-Scargle results and data analysis
         
         Args:
-            model_type: Model type to compare
-            save_plot: Whether to save the comparison plot
+            phi_ext: External flux data
+            I_s: Current data
+            lomb_scargle_result: Results from Lomb-Scargle analysis
+            
+        Returns:
+            lmfit Parameters object with initial estimates
         """
-        if model_type not in self.analysis_results:
-            print(f"❌ No Lomb-Scargle analysis results found for {model_type}")
+        params = Parameters()
+        
+        if lomb_scargle_result is not None:
+            # Use frequency from Lomb-Scargle (detected from detrended data)
+            initial_f = lomb_scargle_result.get('best_frequency', 1.0 / (2 * np.pi))
+            initial_phi_0 = lomb_scargle_result.get('phase', 0.0)
+            
+            # CRITICAL FIX: Re-estimate amplitude and offset from ORIGINAL data
+            # Lomb-Scargle was done on detrended data, but Josephson fit uses original data
+            initial_I_c = np.std(I_s) * 2  # Conservative estimate from original data variation
+            initial_C = np.mean(I_s)  # True baseline from original data
+            
+            print(f"📊 Using hybrid initial parameters:")
+            print(f"   Initial f: {initial_f:.6e} (from Lomb-Scargle analysis)")
+            print(f"   Initial phi_0: {initial_phi_0:.6f} (from Lomb-Scargle analysis)")
+            print(f"   Initial I_c: {initial_I_c:.6e} (re-estimated from original data)")
+            print(f"   Initial C: {initial_C:.6e} (mean of original data)")
+            print("   ✅ Using original data for amplitude and baseline estimation")
+        else:
+            # Fallback estimates from data
+            initial_I_c = np.std(I_s) * 2
+            initial_f = 1.0 / (2 * np.pi)  # Default Josephson frequency
+            initial_phi_0 = 0.0
+            initial_C = np.mean(I_s)
+            
+            print(f"📊 Using data-based initial parameters (no Lomb-Scargle results)")
+        
+        # Estimate linear trend
+        trend_coeffs = np.polyfit(phi_ext, I_s, 1)
+        initial_r = trend_coeffs[0]
+        
+        # CRITICAL FIX: Set d to center of phi_ext to minimize linear term offset
+        initial_d = np.mean(phi_ext)  # Center the data to minimize linear contribution
+        
+        print(f"   Initial d: {initial_d:.6e} (center of phi_ext data)")
+        print(f"   Initial r: {initial_r:.6e} (linear trend from data)")
+        
+        # Set parameters with bounds
+        params.add('I_c', value=initial_I_c, min=0.1 * abs(initial_I_c), max=10 * abs(initial_I_c))
+        params.add('f', value=initial_f, min=0.01 * initial_f, max=100 * initial_f)
+        params.add('d', value=initial_d, min=initial_d - abs(initial_d), max=initial_d + abs(initial_d))
+        params.add('phi_0', value=initial_phi_0, min=-2*np.pi, max=2*np.pi)
+        params.add('T', value=0.5, min=0.01, max=0.99)  # Transmission coefficient
+        params.add('r', value=initial_r, min=-10*abs(initial_r), max=10*abs(initial_r))
+        params.add('C', value=initial_C, min=initial_C - 5*np.std(I_s), max=initial_C + 5*np.std(I_s))
+        
+        self.initial_params = params
+        return params
+    
+    def fit(self, phi_ext, I_s, I_s_error=None, lomb_scargle_result=None, method='lbfgsb'):
+        """
+        Fit the complete Josephson equation to data
+        
+        Args:
+            phi_ext: External flux data
+            I_s: Current data
+            I_s_error: Current measurement errors (optional)
+            lomb_scargle_result: Results from Lomb-Scargle analysis
+            method: Fitting method (default: 'lbfgsb' for L-BFGS-B)
+            
+        Returns:
+            Fit result object
+        """
+        if self.model is None:
+            self.create_model()
+        
+        # Estimate initial parameters
+        params = self.estimate_initial_parameters(phi_ext, I_s, lomb_scargle_result)
+        
+        # Prepare weights
+        weights = None
+        if I_s_error is not None and np.any(I_s_error > 0):
+            weights = 1.0 / I_s_error
+        
+        print(f"\n🔧 Fitting complete Josephson equation using {method.upper()}...")
+        
+        # Perform the fit
+        try:
+            self.result = self.model.fit(
+                I_s, 
+                params, 
+                phi_ext=phi_ext,
+                weights=weights,
+                method=method
+            )
+            
+            print(f"✅ Fitting completed successfully!")
+            print(f"   Chi-square: {self.result.chisqr:.6f}")
+            print(f"   Reduced Chi-square: {self.result.redchi:.6f}")
+            print(f"   AIC: {self.result.aic:.2f}")
+            print(f"   BIC: {self.result.bic:.2f}")
+            
+            return self.result
+            
+        except Exception as e:
+            print(f"❌ Fitting failed: {str(e)}")
+            return None
+    
+    def get_fitted_parameters(self):
+        """Get fitted parameters with uncertainties"""
+        if self.result is None:
+            return None
+        
+        fitted_params = {}
+        for name, param in self.result.params.items():
+            fitted_params[name] = {
+                'value': param.value,
+                'stderr': param.stderr if param.stderr is not None else 0.0,
+                'initial': self.initial_params[name].value
+            }
+        
+        return fitted_params
+    
+    def calculate_fitted_curve(self, phi_ext):
+        """Calculate the fitted curve"""
+        if self.result is None:
+            return None
+        
+        return self.result.eval(phi_ext=phi_ext)
+    
+    def plot_fit_results(self, phi_ext, I_s, save_plot=True, filename_suffix=""):
+        """
+        Plot the fitting results
+        
+        Args:
+            phi_ext: External flux data
+            I_s: Current data
+            save_plot: Whether to save the plot
+            filename_suffix: Suffix for the filename
+        """
+        if self.result is None:
+            print("❌ No fit results to plot")
             return
         
-        if not hasattr(self, 'josephson_fitters') or model_type not in self.josephson_fitters:
-            print(f"❌ No complete Josephson fit results found for {model_type}")
-            print("   Please run fit_complete_josephson_equation() first")
-            return
+        # Calculate fitted curve
+        fitted_curve = self.calculate_fitted_curve(phi_ext)
+        residuals = I_s - fitted_curve
         
-        data = self.simulation_results[model_type]
-        ls_result = self.analysis_results[model_type]
-        fitter = self.josephson_fitters[model_type]
+        # Create statistics
+        stats = ModelStatistics(
+            y_true=I_s,
+            y_pred=fitted_curve,
+            n_params=len(self.result.params),
+            model_name="Complete Josephson Fit"
+        )
         
-        phi_ext = data['Phi_ext']
-        I_s = data['I_s']
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        fig.suptitle('Complete Josephson Equation Fit Results', fontsize=16)
         
-        # Calculate fitted curves
-        ls_fit = ls_result['ls_model']
-        josephson_fit = fitter.calculate_fitted_curve(phi_ext)
-        
-        # Create comparison plot
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-        fig.suptitle(f'Lomb-Scargle vs Complete Josephson Fit: {data["model_name"]}', fontsize=16)
-        
-        # 1. Data with both fits
+        # 1. Data and fit
         ax1 = axes[0, 0]
-        ax1.plot(phi_ext, I_s, 'k.', alpha=0.4, label='Data', markersize=2)
-        ax1.plot(phi_ext, ls_fit, 'b-', linewidth=2, label='Lomb-Scargle Fit', alpha=0.8)
-        ax1.plot(phi_ext, josephson_fit, 'r-', linewidth=2, label='Complete Josephson Fit', alpha=0.8)
+        ax1.plot(phi_ext, I_s, 'b.', alpha=0.6, label='Data', markersize=3)
+        ax1.plot(phi_ext, fitted_curve, 'r-', linewidth=2, label='Complete Josephson Fit')
         ax1.set_xlabel('External Flux (Φ_ext)')
         ax1.set_ylabel('Supercurrent (I_s)')
-        ax1.set_title('Data and Model Fits')
+        ax1.set_title('Data vs Complete Josephson Fit')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
-        # 2. Residuals comparison
+        # 2. Residuals
         ax2 = axes[0, 1]
-        ls_residuals = I_s - ls_fit
-        josephson_residuals = I_s - josephson_fit
-        ax2.plot(phi_ext, ls_residuals, 'b.', alpha=0.6, label='LS Residuals', markersize=3)
-        ax2.plot(phi_ext, josephson_residuals, 'r.', alpha=0.6, label='Josephson Residuals', markersize=3)
+        ax2.plot(phi_ext, residuals, 'g.', alpha=0.6, markersize=3)
         ax2.axhline(y=0, color='k', linestyle='--', alpha=0.5)
         ax2.set_xlabel('External Flux (Φ_ext)')
         ax2.set_ylabel('Residuals')
-        ax2.set_title('Residuals Comparison')
-        ax2.legend()
+        ax2.set_title('Fit Residuals')
         ax2.grid(True, alpha=0.3)
         
         # 3. Parameter comparison
         ax3 = axes[1, 0]
-        fitted_params = fitter.get_fitted_parameters()
+        fitted_params = self.get_fitted_parameters()
         
-        # Compare frequencies and amplitudes
-        ls_freq = ls_result['best_frequency']
-        ls_amp = ls_result['amplitude']
-        josephson_freq = fitted_params['f']['value']
-        josephson_amp = fitted_params['I_c']['value']
+        param_names = []
+        initial_values = []
+        fitted_values = []
+        errors = []
         
-        param_comparison = {
-            'Frequency': [ls_freq, josephson_freq],
-            'Amplitude/I_c': [ls_amp, josephson_amp]
-        }
+        for name, param_info in fitted_params.items():
+            param_names.append(name)
+            initial_values.append(param_info['initial'])
+            fitted_values.append(param_info['value'])
+            errors.append(param_info['stderr'])
         
-        x_pos = np.arange(len(param_comparison))
-        width = 0.35
-        
-        ls_values = [param_comparison['Frequency'][0], param_comparison['Amplitude/I_c'][0]]
-        josephson_values = [param_comparison['Frequency'][1], param_comparison['Amplitude/I_c'][1]]
-        
-        ax3.bar(x_pos - width/2, ls_values, width, label='Lomb-Scargle', alpha=0.8)
-        ax3.bar(x_pos + width/2, josephson_values, width, label='Complete Josephson', alpha=0.8)
+        x_pos = np.arange(len(param_names))
+        ax3.bar(x_pos - 0.2, initial_values, 0.4, label='Initial', alpha=0.7)
+        ax3.errorbar(x_pos + 0.2, fitted_values, yerr=errors, fmt='o', 
+                    label='Fitted', capsize=5, capthick=2)
         ax3.set_xlabel('Parameters')
         ax3.set_ylabel('Values')
-        ax3.set_title('Key Parameter Comparison')
+        ax3.set_title('Parameter Comparison')
         ax3.set_xticks(x_pos)
-        ax3.set_xticklabels(list(param_comparison.keys()))
+        ax3.set_xticklabels(param_names, rotation=45)
         ax3.legend()
         ax3.grid(True, alpha=0.3)
         
-        # 4. Statistical comparison
+        # 4. Statistics
         ax4 = axes[1, 1]
         ax4.axis('off')
         
-        # Calculate statistics for both fits
-        ls_stats = ls_result['statistics']
-        josephson_stats = ModelStatistics(
-            y_true=I_s,
-            y_pred=josephson_fit,
-            n_params=len(fitted_params),
-            model_name="Complete Josephson"
-        )
-        
         stats_text = f"""
-Comparison Statistics:
+Fit Statistics:
 
-Lomb-Scargle Analysis:
-  R²: {ls_stats.r_squared:.6f}
-  RMSE: {ls_stats.rmse:.6e}
-  MAE: {ls_stats.mae:.6e}
-  SNR (Power): {ls_stats.snr_power:.2f} ({ls_stats.snr_db:.1f} dB)
-  SNR (RMS): {ls_stats.snr_rms:.2f} ({ls_stats.snr_rms_db:.1f} dB)
+Chi-square: {self.result.chisqr:.6f}
+Reduced Chi-square: {self.result.redchi:.6f}
+R²: {stats.r_squared:.6f}
+Adjusted R²: {stats.adjusted_r_squared:.6f}
+RMSE: {stats.rmse:.6e}
+MAE: {stats.mae:.6e}
+AIC: {self.result.aic:.2f}
+BIC: {self.result.bic:.2f}
 
-Complete Josephson Fit:
-  R²: {josephson_stats.r_squared:.6f}
-  RMSE: {josephson_stats.rmse:.6e}
-  MAE: {josephson_stats.mae:.6e}
-  SNR (Power): {josephson_stats.snr_power:.2f} ({josephson_stats.snr_db:.1f} dB)
-  SNR (RMS): {josephson_stats.snr_rms:.2f} ({josephson_stats.snr_rms_db:.1f} dB)
-  Chi-square: {fitter.result.chisqr:.6f}
-  AIC: {fitter.result.aic:.2f}
-  BIC: {fitter.result.bic:.2f}
+SNR Metrics:
+Power SNR: {stats.snr_power:.2f} ({stats.snr_db:.1f} dB)
+RMS SNR: {stats.snr_rms:.2f} ({stats.snr_rms_db:.1f} dB)
+Peak SNR: {stats.snr_peak:.2f} ({stats.snr_peak_db:.1f} dB)
 
-Improvement:
-  ΔR²: {josephson_stats.r_squared - ls_stats.r_squared:.6f}
-  ΔRMSE: {ls_stats.rmse - josephson_stats.rmse:.6e}
-  ΔSNR (dB): {josephson_stats.snr_db - ls_stats.snr_db:.1f}
-
-Josephson Parameters:
-  I_c = {fitted_params['I_c']['value']:.6f} ± {fitted_params['I_c']['stderr']:.6f}
-  f = {fitted_params['f']['value']:.6f} ± {fitted_params['f']['stderr']:.6f}
-  T = {fitted_params['T']['value']:.6f} ± {fitted_params['T']['stderr']:.6f}
-  φ₀ = {fitted_params['phi_0']['value']:.6f} ± {fitted_params['phi_0']['stderr']:.6f}
+Fitted Parameters:
+I_c = {fitted_params['I_c']['value']:.6f} ± {fitted_params['I_c']['stderr']:.6f}
+f = {fitted_params['f']['value']:.6f} ± {fitted_params['f']['stderr']:.6f}
+d = {fitted_params['d']['value']:.6f} ± {fitted_params['d']['stderr']:.6f}
+φ₀ = {fitted_params['phi_0']['value']:.6f} ± {fitted_params['phi_0']['stderr']:.6f}
+T = {fitted_params['T']['value']:.6f} ± {fitted_params['T']['stderr']:.6f}
+r = {fitted_params['r']['value']:.6f} ± {fitted_params['r']['stderr']:.6f}
+C = {fitted_params['C']['value']:.6f} ± {fitted_params['C']['stderr']:.6f}
 """
         
         ax4.text(0.05, 0.95, stats_text, transform=ax4.transAxes, 
                 fontsize=9, verticalalignment='top', fontfamily='monospace',
-                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+                bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
         
         plt.tight_layout()
         
         if save_plot:
-            filename = f'lomb_scargle_vs_josephson_comparison_{model_type}.png'
+            filename = f'complete_josephson_fit{filename_suffix}.png'
             plt.savefig(filename, dpi=300, bbox_inches='tight')
-            print(f"📊 Comparison plot saved: {filename}")
+            print(f"📊 Complete Josephson fit plot saved: {filename}")
         
         plt.show()
         
-        return josephson_stats
+        return stats
+    
+    def save_fit_results_to_csv(self, phi_ext, I_s, filename_suffix=""):
+        """Save fit results to CSV file"""
+        if self.result is None:
+            print("❌ No fit results to save")
+            return None
+        
+        fitted_curve = self.calculate_fitted_curve(phi_ext)
+        residuals = I_s - fitted_curve
+        
+        # Create output dataframe
+        output_data = {
+            'Phi_ext': phi_ext,
+            'I_s_measured': I_s,
+            'I_s_josephson_fit': fitted_curve,
+            'residuals': residuals
+        }
+        
+        output_df = pd.DataFrame(output_data)
+        
+        # Save to CSV
+        filename = f'complete_josephson_fit_results{filename_suffix}.csv'
+        output_df.to_csv(filename, index=False)
+        
+        # Also save parameter summary
+        fitted_params = self.get_fitted_parameters()
+        param_summary = []
+        
+        for name, param_info in fitted_params.items():
+            param_summary.append({
+                'Parameter': name,
+                'Initial_Value': param_info['initial'],
+                'Fitted_Value': param_info['value'],
+                'Standard_Error': param_info['stderr']
+            })
+        
+        param_df = pd.DataFrame(param_summary)
+        param_filename = f'complete_josephson_fit_parameters{filename_suffix}.csv'
+        param_df.to_csv(param_filename, index=False)
+        
+        print(f"✅ Fit results saved to: {filename}")
+        print(f"✅ Fit parameters saved to: {param_filename}")
+        print(f"   Data points: {len(output_df)}")
+        
+        return filename, param_filename
 
-    # ...existing code...
+    def fit_josephson_relation(self, phi_ext, I_s, I_s_error=None, lomb_scargle_result=None):
+        """
+        Wrapper method for backward compatibility - calls fit() method
+        
+        Args:
+            phi_ext: External flux data
+            I_s: Current data
+            I_s_error: Current measurement errors (optional)
+            lomb_scargle_result: Results from Lomb-Scargle analysis
+            
+        Returns:
+            Tuple of (fitted_parameters_dict, fit_result)
+        """
+        result = self.fit(phi_ext, I_s, I_s_error, lomb_scargle_result)
+        
+        if result is None:
+            return None, None
+        
+        # Return fitted parameters as dict for compatibility
+        fitted_params = self.get_fitted_parameters()
+        
+        return fitted_params, result
+
 def analyze_real_simulation_data():
     """Analyze real simulation data from CSV files"""
     print("🔬 Analyzing Real Simulation Data")
