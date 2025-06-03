@@ -1014,17 +1014,21 @@ class JosephsonFitter:
         params = Parameters()
         
         if lomb_scargle_result is not None:
-            # Use Lomb-Scargle results as initial estimates
-            initial_I_c = lomb_scargle_result.get('amplitude', np.std(I_s) * 2)
+            # Use frequency from Lomb-Scargle (detected from detrended data)
             initial_f = lomb_scargle_result.get('best_frequency', 1.0 / (2 * np.pi))
             initial_phi_0 = lomb_scargle_result.get('phase', 0.0)
-            initial_C = lomb_scargle_result.get('offset', np.mean(I_s))
             
-            print(f"📊 Using Lomb-Scargle results as initial parameters:")
-            print(f"   Initial I_c: {initial_I_c:.6f}")
-            print(f"   Initial f: {initial_f:.6f}")
-            print(f"   Initial phi_0: {initial_phi_0:.6f}")
-            print(f"   Initial C: {initial_C:.6f}")
+            # CRITICAL FIX: Re-estimate amplitude and offset from ORIGINAL data
+            # Lomb-Scargle was done on detrended data, but Josephson fit uses original data
+            initial_I_c = np.std(I_s) * 2  # Conservative estimate from original data variation
+            initial_C = np.mean(I_s)  # True baseline from original data
+            
+            print(f"📊 Using hybrid initial parameters:")
+            print(f"   Initial f: {initial_f:.6e} (from Lomb-Scargle analysis)")
+            print(f"   Initial phi_0: {initial_phi_0:.6f} (from Lomb-Scargle analysis)")
+            print(f"   Initial I_c: {initial_I_c:.6e} (re-estimated from original data)")
+            print(f"   Initial C: {initial_C:.6e} (mean of original data)")
+            print("   ✅ Using original data for amplitude and baseline estimation")
         else:
             # Fallback estimates from data
             initial_I_c = np.std(I_s) * 2
